@@ -1,0 +1,67 @@
+# ============================================================================
+# MedScribe v2 — Unsloth LoRA Training Configuration
+# Task: Hindi audio-to-structured-MCTS-form extraction
+# Hardware: RTX 5070 Ti (16GB VRAM)
+# ============================================================================
+
+experiment:
+  name: "medscribe-v2-asha-extraction"
+  description: "LoRA fine-tune Gemma 4 E4B for Hindi ASHA visit → MCTS form extraction"
+  seed: 42
+
+model:
+  base_model: "google/gemma-4-E4B-it"
+  # Unsloth handles quantization internally
+  load_in_4bit: true
+  max_seq_length: 4096
+
+lora:
+  r: 16
+  lora_alpha: 16
+  lora_dropout: 0.05
+  bias: "none"
+  # Gemma 4 target modules (verify via model.named_modules())
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 16  # effective batch = 32
+  gradient_checkpointing: true
+  optim: "adamw_8bit"
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  num_train_epochs: 3
+  warmup_ratio: 0.1
+  lr_scheduler_type: "cosine"
+  bf16: true
+  tf32: true
+  logging_steps: 25
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 3
+  evaluation_strategy: "steps"
+  eval_steps: 100
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  output_dir: "./models/checkpoints"
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+
+data:
+  train_file: "./data/processed/train.jsonl"
+  validation_file: "./data/processed/val.jsonl"
+  max_seq_length: 4096
+
+# Export for Ollama deployment
+export:
+  gguf_quantization: "q4_k_m"
+  output_dir: "./models/exported"
+  ollama_modelfile: "./configs/Modelfile"

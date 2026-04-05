@@ -1,0 +1,111 @@
+# ============================================================================
+# MedScribe v2 — Git Ignore
+# ============================================================================
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+*.egg-info/
+*.egg
+pip-log.txt
+
+# === Virtual Environments ===
+venv/
+env/
+.venv/
+.conda/
+
+# === IDEs ===
+.vscode/
+.cursor/
+*.code-workspace
+.idea/
+.ipynb_checkpoints/
+
+# === Claude Code ===
+.claude/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# === Model Weights ===
+*.bin
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.gguf
+models/
+!models/.gitkeep
+
+# === Hugging Face / Model Cache ===
+.cache/
+huggingface/
+
+# === Data (large files) ===
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/README.md
+data/processed/*
+!data/processed/.gitkeep
+data/audio_samples/
+*.h5
+*.hdf5
+*.parquet
+*.feather
+*.wav
+*.mp3
+*.flac
+!tests/fixtures/*.wav
+
+# === Training Artifacts ===
+logs/
+*.log
+wandb/
+runs/
+tensorboard/
+lightning_logs/
+mlruns/
+results/
+
+# === Secrets ===
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials/
+*api_key*
+*apikey*
+*.secret
+
+# === Testing ===
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# === Temporary ===
+*.bak
+*.swp
+*.tmp
+temp/
+tmp/
+
+# === Submission ===
+submission_*/
+*.zip
+
+# === Reference repo (not part of submission) ===
+MedScribe_v1_ref/

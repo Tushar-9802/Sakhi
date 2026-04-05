@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PNC / HBNC Visit Extraction",
+  "description": "Extract postnatal care and home-based newborn care visit data. Covers both mother and infant assessment.",
+  "type": "object",
+  "properties": {
+    "visit_info": {
+      "type": "object",
+      "properties": {
+        "visit_day": {"type": ["integer", "null"], "description": "HBNC visit day: 1, 3, 7, 14, 21, 28, or 42"},
+        "visit_date": {"type": ["string", "null"]},
+        "days_since_delivery": {"type": ["integer", "null"]}
+      }
+    },
+    "mother_assessment": {
+      "type": "object",
+      "properties": {
+        "general_condition": {"type": ["string", "null"]},
+        "temperature": {"type": ["number", "null"]},
+        "vaginal_bleeding": {"type": ["string", "null"], "enum": ["heavy", "moderate", "light", "none", null]},
+        "vaginal_discharge": {"type": ["string", "null"]},
+        "breast_condition": {"type": ["string", "null"]},
+        "uterine_tenderness": {"type": ["boolean", "null"]},
+        "wound_condition": {"type": ["string", "null"], "description": "Episiotomy/CS wound if applicable"},
+        "ifa_tablets_given": {"type": ["integer", "null"]},
+        "contraception_discussed": {"type": ["boolean", "null"]},
+        "contraception_method": {"type": ["string", "null"]}
+      }
+    },
+    "infant_assessment": {
+      "type": "object",
+      "properties": {
+        "weight_kg": {"type": ["number", "null"]},
+        "temperature": {"type": ["number", "null"]},
+        "feeding_status": {
+          "type": ["string", "null"],
+          "enum": ["exclusive_breastfeeding", "mixed_feeding", "formula_only", "not_feeding_well", null]
+        },
+        "breastfeeding_frequency": {"type": ["string", "null"]},
+        "cord_condition": {"type": ["string", "null"], "enum": ["clean_dry", "red", "pus", "bleeding", "fallen", null]},
+        "skin_condition": {"type": ["string", "null"]},
+        "jaundice": {"type": ["string", "null"], "enum": ["none", "mild", "severe_palms_soles", null]},
+        "activity_level": {"type": ["string", "null"], "enum": ["active", "lethargic", "no_movement", null]},
+        "cry": {"type": ["string", "null"], "enum": ["normal", "weak", "no_cry", null]},
+        "breathing": {"type": ["string", "null"]},
+        "warmth_maintained": {"type": ["boolean", "null"]},
+        "immunization_status": {"type": ["string", "null"]}
+      }
+    },
+    "counseling_provided": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Topics counseled: breastfeeding, hygiene, cord care, thermal care, danger signs, immunization"
+    },
+    "symptoms_reported": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["visit_info", "mother_assessment", "infant_assessment", "symptoms_reported"]
+}

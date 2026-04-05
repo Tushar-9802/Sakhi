@@ -1,0 +1,52 @@
+# ============================================================================
+# MedScribe v2 — Model Configuration
+# Gemma 4 E4B on RTX 5070 Ti (16GB VRAM)
+# ============================================================================
+
+model:
+  # Primary model: Gemma 4 E4B (audio + function calling)
+  primary:
+    name: "google/gemma-4-E4B-it"
+    effective_params: "4.5B"
+    total_params: "8B"
+    context_window: 131072  # 128K tokens
+    capabilities:
+      - text
+      - image
+      - audio  # native audio encoder, 25 tokens/sec, max 30 sec
+      - function_calling
+
+  # Fallback: Gemma 4 E2B (lighter, on-device danger sign flagging)
+  fallback:
+    name: "google/gemma-4-E2B-it"
+    effective_params: "2.3B"
+    total_params: "5.1B"
+
+  # Audio constraints (critical for pipeline design)
+  audio:
+    max_duration_seconds: 30
+    tokens_per_second: 25
+    max_audio_tokens: 750
+    sample_rate: 16000
+    channels: 1
+    format: "wav"  # 16kHz, mono, 32-bit float
+
+  # Quantization
+  quantization:
+    primary_quant: "Q4_K_M"  # ~2.5-6GB, fits easily
+    quality_quant: "Q8_0"    # ~4.5-12GB, for evaluation
+    full_precision: "bf16"   # ~8-16GB, for fine-tuning
+
+# Ollama tags (text/function-calling serving only)
+ollama:
+  primary: "gemma4:e4b-it-q4_K_M"
+  quality: "gemma4:e4b-it-q8_0"
+  full: "gemma4:e4b-it-bf16"
+
+# Transformers (audio pipeline — Ollama doesn't support audio passthrough)
+transformers:
+  device_map: "auto"
+  torch_dtype: "bfloat16"
+  max_memory: {0: "14GB"}
+  trust_remote_code: true
+  attn_implementation: "sdpa"
