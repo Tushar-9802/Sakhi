@@ -18,6 +18,12 @@ import os
 import sys
 import yaml
 
+# Disable torch.compile — required for PyTorch nightly + Gemma 4 on SM 12.0
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+import torch
+torch._dynamo.config.suppress_errors = True
+
 
 def main():
     parser = argparse.ArgumentParser(description="MedScribe v2 — Unsloth Training")

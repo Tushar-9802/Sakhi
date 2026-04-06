@@ -18,7 +18,7 @@ model:
 lora:
   r: 16
   lora_alpha: 16
-  lora_dropout: 0.05
+  lora_dropout: 0.0
   bias: "none"
   # Gemma 4 target modules (verify via model.named_modules())
   target_modules:

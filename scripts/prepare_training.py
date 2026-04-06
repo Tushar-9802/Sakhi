@@ -127,7 +127,7 @@ def main():
 
     if not os.path.exists(INPUT_FILE):
         print(f"ABORT: Input not found: {INPUT_FILE}")
-        print(f"Run scripts/03_generate_training_data.py first.")
+        print(f"Run scripts/generate_training_data.py first.")
         sys.exit(1)
 
     # Load schemas
@@ -152,6 +152,29 @@ def main():
         all_examples.extend(examples)
 
     print(f"Produced {len(all_examples)} training examples ({len(all_examples) // len(raw_samples)} per sample)")
+
+    # ── Oversample positive (danger sign) examples to fix imbalance ──
+    # Raw data is ~32% positive / 68% negative due to stricter validation
+    # on danger sign scenarios. Oversample positive to reach ~45% target.
+    danger_positive = [ex for ex in all_examples
+                       if ex["metadata"]["task"] == "danger_signs" and ex["metadata"]["has_danger_signs"]]
+    danger_negative = [ex for ex in all_examples
+                       if ex["metadata"]["task"] == "danger_signs" and not ex["metadata"]["has_danger_signs"]]
+
+    if danger_positive and danger_negative:
+        current_ratio = len(danger_positive) / (len(danger_positive) + len(danger_negative))
+        target_ratio = 0.45
+        if current_ratio < target_ratio:
+            # Calculate how many extra positive samples needed
+            extra_needed = int((target_ratio * len(danger_negative)) / (1 - target_ratio)) - len(danger_positive)
+            extra_needed = max(0, extra_needed)
+            if extra_needed > 0:
+                oversampled = random.choices(danger_positive, k=extra_needed)
+                all_examples.extend(oversampled)
+                new_pos = len(danger_positive) + extra_needed
+                new_total = new_pos + len(danger_negative)
+                print(f"Oversampled: +{extra_needed} positive danger sign examples "
+                      f"({current_ratio:.0%} → {new_pos/new_total:.0%})")
 
     # Shuffle
     random.shuffle(all_examples)
@@ -202,7 +225,7 @@ def main():
     pos = stats['danger_sign_balance']['positive']
     total = neg + pos
     print(f"  Danger sign balance: {pos} positive / {neg} negative ({neg/total*100:.0f}% negative)" if total else "")
-    print(f"\nReady for training: python scripts/05_train_unsloth.py")
+    print(f"\nReady for training: python scripts/train_unsloth.py")
 
 
 if __name__ == "__main__":

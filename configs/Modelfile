@@ -1,4 +1,4 @@
-FROM ./models/exported/unsloth.Q4_K_M.gguf
+FROM ./models/merged_16bit
 
 TEMPLATE """{{ if .System }}<start_of_turn>system
 {{ .System }}<end_of_turn>

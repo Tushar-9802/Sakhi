@@ -20,6 +20,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+import torch
+torch._dynamo.config.suppress_errors = True
+
 
 def load_val_data(path: str) -> list[dict]:
     """Load validation JSONL (raw format with ground truth)."""
@@ -118,20 +123,18 @@ def run_inference_ollama(transcript: str, system_prompt: str, model: str) -> str
 
 
 def run_inference_transformers(transcript: str, system_prompt: str, model_path: str) -> str:
-    """Run inference via local Transformers model."""
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    """Run inference via Unsloth-loaded model (handles LoRA + 4-bit)."""
+    from unsloth import FastLanguageModel
 
     # Cache model loading
     if not hasattr(run_inference_transformers, "_model"):
-        print("  Loading model...")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
+        print("  Loading model via Unsloth...")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_path,
+            max_seq_length=4096,
+            load_in_4bit=True,
         )
+        FastLanguageModel.for_inference(model)
         run_inference_transformers._model = model
         run_inference_transformers._tokenizer = tokenizer
 
@@ -142,7 +145,8 @@ def run_inference_transformers(transcript: str, system_prompt: str, model_path: 
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": transcript},
     ]
-    inputs = tokenizer.apply_chat_template(messages, return_tensors="pt", return_dict=True).to("cuda")
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(text=[text], return_tensors="pt").to("cuda")
     with torch.no_grad():
         output_ids = model.generate(**inputs, max_new_tokens=2048, do_sample=False)
     return tokenizer.decode(output_ids[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
@@ -194,14 +198,20 @@ def main():
             json_invalid += 1
             continue
 
-        # Parse JSON
+        # Parse JSON — strip markdown code fences if present
+        pred_clean = pred_text.strip()
+        if pred_clean.startswith("```"):
+            # Remove ```json ... ``` wrapper
+            lines = pred_clean.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            pred_clean = "\n".join(lines)
         try:
-            pred_data = json.loads(pred_text)
+            pred_data = json.loads(pred_clean)
             gt_data = json.loads(gt_response)
             json_valid += 1
         except json.JSONDecodeError:
             json_invalid += 1
-            print(f"  [{i+1}] Invalid JSON output")
+            print(f"  [{i+1}] Invalid JSON: {pred_clean[:100]}...")
             continue
 
         # Field accuracy
