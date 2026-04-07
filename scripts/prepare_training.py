@@ -29,7 +29,10 @@ from pathlib import Path
 # ============================================================
 # CONFIG
 # ============================================================
-INPUT_FILE = "data/processed/training_data_raw.jsonl"
+DEFAULT_INPUT_FILE = "data/processed/training_data_raw.jsonl"
+AUGMENTED_INPUT_FILE = "data/processed/training_data_raw_augmented.jsonl"
+# Use augmented data if available, otherwise fall back to original
+INPUT_FILE = AUGMENTED_INPUT_FILE if os.path.exists(AUGMENTED_INPUT_FILE) else DEFAULT_INPUT_FILE
 TRAIN_FILE = "data/processed/train.jsonl"
 VAL_FILE = "data/processed/val.jsonl"
 STATS_FILE = "data/processed/data_stats.json"
@@ -37,7 +40,13 @@ STATS_FILE = "data/processed/data_stats.json"
 FORM_SYSTEM_PROMPT = (
     "You are a clinical data extraction system for India's ASHA health worker program. "
     "Extract structured data from the Hindi/Hinglish home visit conversation into the requested JSON schema. "
-    "ONLY extract information explicitly stated in the conversation. Use null for any field not mentioned. "
+    "ONLY extract information explicitly stated in the conversation. Use null for any field not mentioned.\n\n"
+    "STRICT RULES:\n"
+    "1. Do NOT invent names, dates, phone numbers, or addresses. If the patient is only called 'दीदी' or 'बहन', set name to null.\n"
+    "2. If age is not explicitly stated as a number, set age to null. Do NOT guess from context.\n"
+    "3. If blood group, HIV status, or other lab tests are not discussed, they MUST be null — never assume 'negative' or a default group.\n"
+    "4. If the conversation has no speaker labels (ASHA/Patient), still extract data but be extra strict about nulls.\n"
+    "5. Numbers may appear as Hindi words (e.g., 'एक सो दस बटा सत्तर' = 110/70). Convert them to digits.\n"
     "Return valid JSON only."
 )
 

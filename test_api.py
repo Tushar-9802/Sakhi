@@ -1,105 +1,36 @@
-"""Quick API test for Sakhi — hits the running Gradio app."""
-import requests
+"""Quick API test for Sakhi — hits the running Gradio app via HTTP."""
 import json
-import sys
+import requests
+import time
 
 BASE = "http://localhost:7860"
 
-# Example transcripts (same as in-app examples)
 TESTS = {
     "ANC Normal": {
-        "transcript": (
-            "ASHA: नमस्ते, कैसे हैं आप?\n"
-            "Patient: नमस्ते दीदी, मैं ठीक हूँ।\n"
-            "ASHA: अच्छा है। मैं आपका चेकअप करने आई हूँ। चलिए, पहले आपका BP चेक कर लेती हूँ।\n"
-            "Patient: ठीक है।\n"
-            "ASHA: आपका BP 110/70 है, बिल्कुल ठीक है। अब वजन देखती हूँ... 58 kg है। पिछली बार 56 था, तो अच्छा बढ़ रहा है।\n"
-            "Patient: हाँ, मैं अच्छा खा रही हूँ।\n"
-            "ASHA: बहुत अच्छा! Hb कितना आया था पिछली बार?\n"
-            "Patient: डॉक्टर ने कहा था 11.5 है।\n"
-            "ASHA: ये तो बहुत अच्छा है। IFA की गोलियाँ ले रही हैं?\n"
-            "Patient: हाँ, रोज़ लेती हूँ।\n"
-            "ASHA: TT का टीका लगा?\n"
-            "Patient: हाँ, पहला लग गया है।\n"
-            "ASHA: बच्चे की हलचल कैसी है?\n"
-            "Patient: बहुत हिलता-डुलता है, ठीक है।\n"
-            "ASHA: बहुत अच्छा। आप लगभग 24 हफ्ते की हैं। डिलीवरी के लिए कहाँ जाएँगी?\n"
-            "Patient: PHC में।\n"
-            "ASHA: गाड़ी का इंतज़ाम है?\n"
-            "Patient: हाँ, पति की गाड़ी है।\n"
-            "ASHA: ठीक है। अगली बार 2 हफ्ते बाद आऊँगी। कोई तकलीफ़ हो तो फ़ोन कर दीजिए।\n"
-            "Patient: ठीक है दीदी, धन्यवाद।"
-        ),
+        "transcript": "ASHA: \u0928\u092e\u0938\u094d\u0924\u0947, \u0915\u0948\u0938\u0947 \u0939\u0948\u0902 \u0906\u092a?\nPatient: \u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0940\u0926\u0940, \u092e\u0948\u0902 \u0920\u0940\u0915 \u0939\u0942\u0901\u0964\nASHA: \u0905\u091a\u094d\u091b\u093e \u0939\u0948\u0964 \u092e\u0948\u0902 \u0906\u092a\u0915\u093e \u091a\u0947\u0915\u0905\u092a \u0915\u0930\u0928\u0947 \u0906\u0908 \u0939\u0942\u0901\u0964 \u091a\u0932\u093f\u090f, \u092a\u0939\u0932\u0947 \u0906\u092a\u0915\u093e BP \u091a\u0947\u0915 \u0915\u0930 \u0932\u0947\u0924\u0940 \u0939\u0942\u0901\u0964\nPatient: \u0920\u0940\u0915 \u0939\u0948\u0964\nASHA: \u0906\u092a\u0915\u093e BP 110/70 \u0939\u0948, \u092c\u093f\u0932\u094d\u0915\u0941\u0932 \u0920\u0940\u0915 \u0939\u0948\u0964 \u0905\u092c \u0935\u091c\u0928 \u0926\u0947\u0916\u0924\u0940 \u0939\u0942\u0901... 58 kg \u0939\u0948\u0964 \u092a\u093f\u091b\u0932\u0940 \u092c\u093e\u0930 56 \u0925\u093e, \u0924\u094b \u0905\u091a\u094d\u091b\u093e \u092c\u0922\u093c \u0930\u0939\u093e \u0939\u0948\u0964\nPatient: \u0939\u093e\u0901, \u092e\u0948\u0902 \u0905\u091a\u094d\u091b\u093e \u0916\u093e \u0930\u0939\u0940 \u0939\u0942\u0901\u0964\nASHA: \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e! Hb \u0915\u093f\u0924\u0928\u093e \u0906\u092f\u093e \u0925\u093e \u092a\u093f\u091b\u0932\u0940 \u092c\u093e\u0930?\nPatient: \u0921\u0949\u0915\u094d\u091f\u0930 \u0928\u0947 \u0915\u0939\u093e \u0925\u093e 11.5 \u0939\u0948\u0964\nASHA: \u092f\u0947 \u0924\u094b \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0939\u0948\u0964 IFA \u0915\u0940 \u0917\u094b\u0932\u093f\u092f\u093e\u0901 \u0932\u0947 \u0930\u0939\u0940 \u0939\u0948\u0902?\nPatient: \u0939\u093e\u0901, \u0930\u094b\u091c\u093c \u0932\u0947\u0924\u0940 \u0939\u0942\u0901\u0964\nASHA: TT \u0915\u093e \u091f\u0940\u0915\u093e \u0932\u0917\u093e?\nPatient: \u0939\u093e\u0901, \u092a\u0939\u0932\u093e \u0932\u0917 \u0917\u092f\u093e \u0939\u0948\u0964\nASHA: \u092c\u091a\u094d\u091a\u0947 \u0915\u0940 \u0939\u0932\u091a\u0932 \u0915\u0948\u0938\u0940 \u0939\u0948?\nPatient: \u092c\u0939\u0941\u0924 \u0939\u093f\u0932\u0924\u093e-\u0921\u0941\u0932\u0924\u093e \u0939\u0948, \u0920\u0940\u0915 \u0939\u0948\u0964\nASHA: \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e\u0964 \u0906\u092a \u0932\u0917\u092d\u0917 24 \u0939\u092b\u093c\u094d\u0924\u0947 \u0915\u0940 \u0939\u0948\u0902\u0964 \u0921\u093f\u0932\u0940\u0935\u0930\u0940 \u0915\u0947 \u0932\u093f\u090f \u0915\u0939\u093e\u0901 \u091c\u093e\u090f\u0901\u0917\u0940?\nPatient: PHC \u092e\u0947\u0902\u0964\nASHA: \u0917\u093e\u0921\u093c\u0940 \u0915\u093e \u0907\u0902\u0924\u091c\u093c\u093e\u092e \u0939\u0948?\nPatient: \u0939\u093e\u0901, \u092a\u0924\u093f \u0915\u0940 \u0917\u093e\u0921\u093c\u0940 \u0939\u0948\u0964\nASHA: \u0920\u0940\u0915 \u0939\u0948\u0964 \u0905\u0917\u0932\u0940 \u092c\u093e\u0930 2 \u0939\u092b\u093c\u094d\u0924\u0947 \u092c\u093e\u0926 \u0906\u0930\u0942\u0901\u0917\u0940\u0964 \u0915\u094b\u0908 \u0924\u0915\u0932\u0940\u092b\u093c \u0939\u094b \u0924\u094b \u092b\u093c\u094b\u0928 \u0915\u0930 \u0926\u0940\u091c\u093f\u090f\u0964\nPatient: \u0920\u0940\u0915 \u0939\u0948 \u0926\u0940\u0926\u0940, \u0927\u0928\u094d\u092f\u0935\u093e\u0926\u0964",
         "visit_type": "Auto-detect",
         "expect_danger": False,
-        "expect_fields": {"bp_systolic": 110, "bp_diastolic": 70, "weight_kg": 58.0, "hemoglobin_gm_percent": 11.5},
+        "expect_fields": ["110", "70", "58.0", "11.5"],
     },
     "ANC Preeclampsia DANGER": {
-        "transcript": (
-            "ASHA: नमस्ते दीदी, कैसे हैं?\n"
-            "Patient: दीदी, मुझे बहुत सिरदर्द हो रहा है कल से।\n"
-            "ASHA: अच्छा, और कोई तकलीफ़?\n"
-            "Patient: हाँ, आँखों के सामने धुंधला दिखता है कभी-कभी। और चेहरे पर सूजन भी आ गई है।\n"
-            "ASHA: ये तो ठीक नहीं है। मैं BP चेक करती हूँ... आपका BP 155/100 आ रहा है। ये बहुत ज़्यादा है।\n"
-            "Patient: क्या करें दीदी?\n"
-            "ASHA: आपको तुरंत PHC जाना होगा। ये गंभीर हो सकता है। आप कितने महीने की हैं?\n"
-            "Patient: लगभग 8 महीने।\n"
-            "ASHA: पैरों में सूजन है?\n"
-            "Patient: हाँ, काफी सूजन है।\n"
-            "ASHA: मैं अभी गाड़ी का इंतज़ाम करती हूँ। आपको आज ही PHC ले चलती हूँ।"
-        ),
+        "transcript": "ASHA: \u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0940\u0926\u0940, \u0915\u0948\u0938\u0947 \u0939\u0948\u0902?\nPatient: \u0926\u0940\u0926\u0940, \u092e\u0941\u091d\u0947 \u092c\u0939\u0941\u0924 \u0938\u093f\u0930\u0926\u0930\u094d\u0926 \u0939\u094b \u0930\u0939\u093e \u0939\u0948 \u0915\u0932 \u0938\u0947\u0964\nASHA: \u0905\u091a\u094d\u091b\u093e, \u0914\u0930 \u0915\u094b\u0908 \u0924\u0915\u0932\u0940\u092b\u093c?\nPatient: \u0939\u093e\u0901, \u0906\u0901\u0916\u094b\u0902 \u0915\u0947 \u0938\u093e\u092e\u0928\u0947 \u0927\u0941\u0902\u0927\u0932\u093e \u0926\u093f\u0916\u0924\u093e \u0939\u0948 \u0915\u092d\u0940-\u0915\u092d\u0940\u0964 \u0914\u0930 \u091a\u0947\u0939\u0930\u0947 \u092a\u0930 \u0938\u0942\u091c\u0928 \u092d\u0940 \u0906 \u0917\u0908 \u0939\u0948\u0964\nASHA: \u092f\u0947 \u0924\u094b \u0920\u0940\u0915 \u0928\u0939\u0940\u0902 \u0939\u0948\u0964 \u092e\u0948\u0902 BP \u091a\u0947\u0915 \u0915\u0930\u0924\u0940 \u0939\u0942\u0901... \u0906\u092a\u0915\u093e BP 155/100 \u0906 \u0930\u0939\u093e \u0939\u0948\u0964 \u092f\u0947 \u092c\u0939\u0941\u0924 \u091c\u093c\u094d\u092f\u093e\u0926\u093e \u0939\u0948\u0964\nPatient: \u0915\u094d\u092f\u093e \u0915\u0930\u0947\u0902 \u0926\u0940\u0926\u0940?\nASHA: \u0906\u092a\u0915\u094b \u0924\u0941\u0930\u0902\u0924 PHC \u091c\u093e\u0928\u093e \u0939\u094b\u0917\u093e\u0964 \u092f\u0947 \u0917\u0902\u092d\u0940\u0930 \u0939\u094b \u0938\u0915\u0924\u093e \u0939\u0948\u0964 \u0906\u092a \u0915\u093f\u0924\u0928\u0947 \u092e\u0939\u0940\u0928\u0947 \u0915\u0940 \u0939\u0948\u0902?\nPatient: \u0932\u0917\u092d\u0917 8 \u092e\u0939\u0940\u0928\u0947\u0964\nASHA: \u092a\u0948\u0930\u094b\u0902 \u092e\u0947\u0902 \u0938\u0942\u091c\u0928 \u0939\u0948?\nPatient: \u0939\u093e\u0901, \u0915\u093e\u092b\u093c\u0940 \u0938\u0942\u091c\u0928 \u0939\u0948\u0964\nASHA: \u092e\u0948\u0902 \u0905\u092d\u0940 \u0917\u093e\u0921\u093c\u0940 \u0915\u093e \u0907\u0902\u0924\u091c\u093c\u093e\u092e \u0915\u0930\u0924\u0940 \u0939\u0942\u0901\u0964 \u0906\u092a\u0915\u094b \u0906\u091c \u0939\u0940 PHC \u0932\u0947 \u091a\u0932\u0924\u0940 \u0939\u0942\u0901\u0964",
         "visit_type": "Auto-detect",
         "expect_danger": True,
-        "expect_fields": {"bp_systolic": 155, "bp_diastolic": 100},
+        "expect_fields": ["155", "100"],
     },
     "PNC Newborn DANGER": {
-        "transcript": (
-            "ASHA: नमस्ते, कैसे हैं? बच्चा कैसा है?\n"
-            "Mother: दीदी, बच्चा बहुत सोता रहता है। दूध भी ठीक से नहीं पीता।\n"
-            "ASHA: कब से ऐसा है?\n"
-            "Mother: कल से। पहले ठीक था, अब लगभग 12 घंटे से दूध नहीं पिया।\n"
-            "ASHA: बच्चे का रोना कैसा है?\n"
-            "Mother: बहुत कमज़ोर आवाज़ में रोता है।\n"
-            "ASHA: तापमान चेक करती हूँ... 100.5 डिग्री है। बुखार है। और बच्चा सुस्त लग रहा है।\n"
-            "Mother: क्या करें?\n"
-            "ASHA: ये IMNCI के danger signs हैं। बच्चे को तुरंत PHC ले जाना होगा। मैं गाड़ी बुलाती हूँ।"
-        ),
+        "transcript": "ASHA: \u0928\u092e\u0938\u094d\u0924\u0947, \u0915\u0948\u0938\u0947 \u0939\u0948\u0902? \u092c\u091a\u094d\u091a\u093e \u0915\u0948\u0938\u093e \u0939\u0948?\nMother: \u0926\u0940\u0926\u0940, \u092c\u091a\u094d\u091a\u093e \u092c\u0939\u0941\u0924 \u0938\u094b\u0924\u093e \u0930\u0939\u0924\u093e \u0939\u0948\u0964 \u0926\u0942\u0927 \u092d\u0940 \u0920\u0940\u0915 \u0938\u0947 \u0928\u0939\u0940\u0902 \u092a\u0940\u0924\u093e\u0964\nASHA: \u0915\u092c \u0938\u0947 \u0910\u0938\u093e \u0939\u0948?\nMother: \u0915\u0932 \u0938\u0947\u0964 \u092a\u0939\u0932\u0947 \u0920\u0940\u0915 \u0925\u093e, \u0905\u092c \u0932\u0917\u092d\u0917 12 \u0918\u0902\u091f\u0947 \u0938\u0947 \u0926\u0942\u0927 \u0928\u0939\u0940\u0902 \u092a\u093f\u092f\u093e\u0964\nASHA: \u092c\u091a\u094d\u091a\u0947 \u0915\u093e \u0930\u094b\u0928\u093e \u0915\u0948\u0938\u093e \u0939\u0948?\nMother: \u092c\u0939\u0941\u0924 \u0915\u092e\u091c\u093c\u094b\u0930 \u0906\u0935\u093e\u091c\u093c \u092e\u0947\u0902 \u0930\u094b\u0924\u093e \u0939\u0948\u0964\nASHA: \u0924\u093e\u092a\u092e\u093e\u0928 \u091a\u0947\u0915 \u0915\u0930\u0924\u0940 \u0939\u0942\u0901... 100.5 \u0921\u093f\u0917\u094d\u0930\u0940 \u0939\u0948\u0964 \u092c\u0941\u0916\u093e\u0930 \u0939\u0948\u0964 \u0914\u0930 \u092c\u091a\u094d\u091a\u093e \u0938\u0941\u0938\u094d\u0924 \u0932\u0917 \u0930\u0939\u093e \u0939\u0948\u0964\nMother: \u0915\u094d\u092f\u093e \u0915\u0930\u0947\u0902?\nASHA: \u092f\u0947 IMNCI \u0915\u0947 danger signs \u0939\u0948\u0902\u0964 \u092c\u091a\u094d\u091a\u0947 \u0915\u094b \u0924\u0941\u0930\u0902\u0924 PHC \u0932\u0947 \u091c\u093e\u0928\u093e \u0939\u094b\u0917\u093e\u0964 \u092e\u0948\u0902 \u0917\u093e\u0921\u093c\u0940 \u092c\u0941\u0932\u093e\u0924\u0940 \u0939\u0942\u0901\u0964",
         "visit_type": "Auto-detect",
         "expect_danger": True,
-        "expect_fields": {},
+        "expect_fields": [],
     },
     "Child Health Routine": {
-        "transcript": (
-            "ASHA: नमस्ते, बच्चा कैसा है?\n"
-            "Mother: बिल्कुल ठीक है दीदी। खूब खाता है, खेलता है।\n"
-            "ASHA: बहुत अच्छा! वजन देखती हूँ... 8.5 kg है। 9 महीने के लिए अच्छा है।\n"
-            "Mother: हाँ, दाल-चावल, केला सब खाता है अब।\n"
-            "ASHA: Vitamin A की दवाई दी थी पिछली बार?\n"
-            "Mother: हाँ, 6 महीने में दी थी।\n"
-            "ASHA: अच्छा। अब deworming भी देनी है। और टीके सब लगे हैं?\n"
-            "Mother: हाँ, सब समय पर लगे हैं।\n"
-            "ASHA: बहुत अच्छा। बच्चा बैठता है, घुटनों पर चलता है?\n"
-            "Mother: हाँ, सब करता है। बोलने भी लगा है थोड़ा।\n"
-            "ASHA: बढ़िया है। अगली बार 3 महीने बाद आऊँगी।"
-        ),
+        "transcript": "ASHA: \u0928\u092e\u0938\u094d\u0924\u0947, \u092c\u091a\u094d\u091a\u093e \u0915\u0948\u0938\u093e \u0939\u0948?\nMother: \u092c\u093f\u0932\u094d\u0915\u0941\u0932 \u0920\u0940\u0915 \u0939\u0948 \u0926\u0940\u0926\u0940\u0964 \u0916\u0942\u092c \u0916\u093e\u0924\u093e \u0939\u0948, \u0916\u0947\u0932\u0924\u093e \u0939\u0948\u0964\nASHA: \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e! \u0935\u091c\u0928 \u0926\u0947\u0916\u0924\u0940 \u0939\u0942\u0901... 8.5 kg \u0939\u0948\u0964 9 \u092e\u0939\u0940\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0905\u091a\u094d\u091b\u093e \u0939\u0948\u0964\nMother: \u0939\u093e\u0901, \u0926\u093e\u0932-\u091a\u093e\u0935\u0932, \u0915\u0947\u0932\u093e \u0938\u092c \u0916\u093e\u0924\u093e \u0939\u0948 \u0905\u092c\u0964\nASHA: Vitamin A \u0915\u0940 \u0926\u0935\u093e\u0908 \u0926\u0940 \u0925\u0940 \u092a\u093f\u091b\u0932\u0940 \u092c\u093e\u0930?\nMother: \u0939\u093e\u0901, 6 \u092e\u0939\u0940\u0928\u0947 \u092e\u0947\u0902 \u0926\u0940 \u0925\u0940\u0964\nASHA: \u0905\u091a\u094d\u091b\u093e\u0964 \u0905\u092c deworming \u092d\u0940 \u0926\u0947\u0928\u0940 \u0939\u0948\u0964 \u0914\u0930 \u091f\u0940\u0915\u0947 \u0938\u092c \u0932\u0917\u0947 \u0939\u0948\u0902?\nMother: \u0939\u093e\u0901, \u0938\u092c \u0938\u092e\u092f \u092a\u0930 \u0932\u0917\u0947 \u0939\u0948\u0902\u0964\nASHA: \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e\u0964 \u092c\u091a\u094d\u091a\u093e \u092c\u0948\u0920\u0924\u093e \u0939\u0948, \u0918\u0941\u091f\u0928\u094b\u0902 \u092a\u0930 \u091a\u0932\u0924\u093e \u0939\u0948?\nMother: \u0939\u093e\u0901, \u0938\u092c \u0915\u0930\u0924\u093e \u0939\u0948\u0964 \u092c\u094b\u0932\u0928\u0947 \u092d\u0940 \u0932\u0917\u093e \u0939\u0948 \u0925\u094b\u0921\u093c\u093e\u0964\nASHA: \u092c\u0922\u093c\u093f\u092f\u093e \u0939\u0948\u0964 \u0905\u0917\u0932\u0940 \u092c\u093e\u0930 3 \u092e\u0939\u0940\u0928\u0947 \u092c\u093e\u0926 \u0906\u0930\u0942\u0901\u0917\u0940\u0964",
         "visit_type": "Auto-detect",
         "expect_danger": False,
-        "expect_fields": {"weight_kg": 8.5},
+        "expect_fields": ["8.5"],
     },
 }
-
-
-def call_gradio_api(transcript, visit_type="Auto-detect"):
-    """Call the Gradio app's process_transcript endpoint."""
-    from gradio_client import Client
-    client = Client(BASE)
-    # Text to Form tab uses process_transcript
-    result = client.predict(
-        transcript=transcript,
-        visit_type_override=visit_type,
-        api_name="/process_transcript"
-    )
-    return result
 
 
 def run_tests():
@@ -110,13 +41,11 @@ def run_tests():
     try:
         from gradio_client import Client
     except ImportError:
-        print("Installing gradio_client...")
         import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "gradio_client", "-q"])
+        subprocess.run(["pip", "install", "gradio_client", "-q"])
         from gradio_client import Client
 
     client = Client(BASE, verbose=False)
-
     passed = 0
     failed = 0
 
@@ -128,55 +57,47 @@ def run_tests():
                 visit_type_override=test["visit_type"],
                 api_name="/process_transcript"
             )
-
-            # result is a tuple: (status_html, form_html, danger_html, time_str)
             status_html, form_html, danger_html, time_str = result
 
-            # Check basics
             has_form = "result-card" in form_html and "error" not in form_html
-            has_danger_section = "danger-card" in danger_html
             has_danger_signs = "Danger Signs Detected" in danger_html
-            is_routine = "ROUTINE FOLLOW-UP" in danger_html
             is_referral = "REFERRAL" in danger_html
 
-            print(f"  Form extracted: {'YES' if has_form else 'FAILED'}")
-            print(f"  Danger signs: {'YES' if has_danger_signs else 'none'}")
-            print(f"  Referral: {'REFERRAL' if is_referral else 'routine'}")
+            print(f"  Form: {'OK' if has_form else 'FAIL'}")
+            print(f"  Danger: {'YES' if has_danger_signs else 'none'}")
+            print(f"  Referral: {'YES' if is_referral else 'no'}")
             print(f"  Time: {time_str}")
 
-            # Validate expectations
             ok = True
             if test["expect_danger"] and not has_danger_signs:
-                print(f"  FAIL: expected danger signs but got none")
+                print(f"  FAIL: expected danger signs")
                 ok = False
             if not test["expect_danger"] and has_danger_signs:
-                print(f"  FAIL: expected NO danger signs but got some")
+                print(f"  FAIL: unexpected danger signs")
                 ok = False
             if not has_form:
-                print(f"  FAIL: form extraction failed")
+                print(f"  FAIL: no form")
                 ok = False
 
-            # Check specific field values in form HTML
-            for field, expected in test["expect_fields"].items():
-                field_label = field.replace("_", " ").title()
-                if str(expected) in form_html:
-                    print(f"  {field_label}: {expected} OK")
+            for val in test["expect_fields"]:
+                if val in form_html:
+                    print(f"  Field {val}: OK")
                 else:
-                    print(f"  FAIL: {field_label} expected {expected}, not found in output")
+                    print(f"  FAIL: {val} not found")
                     ok = False
 
+            print(f"  {'PASSED' if ok else 'FAILED'}")
             if ok:
-                print(f"  PASSED")
                 passed += 1
             else:
                 failed += 1
 
         except Exception as e:
-            print(f"  ERROR: {e}")
+            print(f"  ERROR: {type(e).__name__}: {str(e)[:80]}")
             failed += 1
 
     print(f"\n{'=' * 60}")
-    print(f"RESULTS: {passed} passed, {failed} failed out of {len(TESTS)}")
+    print(f"RESULTS: {passed}/{len(TESTS)} passed")
     print(f"{'=' * 60}")
 
 

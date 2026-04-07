@@ -96,12 +96,21 @@ credentials/
 htmlcov/
 *.cover
 
-# === Temporary ===
+# === Temporary / scratch files ===
 *.bak
 *.swp
 *.tmp
 temp/
 tmp/
+postprocess_test*.txt
+pp_test.txt
+regex_test.json
+test_results.txt
+test_audio_result*.json
+unsloth_compiled_cache/
+
+# === Experiment scripts (not part of pipeline) ===
+scripts/prompt_experiment*.py
 
 # === Submission ===
 submission_*/

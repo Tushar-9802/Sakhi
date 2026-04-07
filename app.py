@@ -32,8 +32,13 @@ MAX_SEQ_LENGTH = 4096
 FORM_SYSTEM_PROMPT = (
     "You are a clinical data extraction system for India's ASHA health worker program. "
     "Extract structured data from the Hindi/Hinglish home visit conversation into the requested JSON schema. "
-    "ONLY extract information explicitly stated in the conversation. Use null for any field not mentioned. "
-    "Do NOT invent names, dates, phone numbers, or addresses that were not spoken. "
+    "ONLY extract information explicitly stated in the conversation. Use null for any field not mentioned.\n\n"
+    "STRICT RULES:\n"
+    "1. Do NOT invent names, dates, phone numbers, or addresses. If the patient is only called 'दीदी' or 'बहन', set name to null.\n"
+    "2. If age is not explicitly stated as a number, set age to null. Do NOT guess from context.\n"
+    "3. If blood group, HIV status, or other lab tests are not discussed, they MUST be null — never assume 'negative' or a default group.\n"
+    "4. If the conversation has no speaker labels (ASHA/Patient), still extract data but be extra strict about nulls.\n"
+    "5. Numbers may appear as Hindi words (e.g., 'एक सो दस बटा सत्तर' = 110/70). Convert them to digits.\n"
     "Return valid JSON only."
 )
 
@@ -177,25 +182,36 @@ def load_model():
     return _model, _tokenizer
 
 
-_whisper_pipe = None
+# ============================================================
+# TRANSCRIPT POST-PROCESSING (delegated to src/hindi_normalize)
+# ============================================================
+from src.hindi_normalize import normalize_transcript as postprocess_transcript
+
+
+_whisper_model = None
 
 def transcribe_audio(audio_path):
-    """Transcribe audio file using Whisper small via transformers (Hindi Devanagari)."""
-    global _whisper_pipe
-    if _whisper_pipe is None:
-        from transformers import pipeline as hf_pipeline
-        print("[ASR] Loading Whisper small for Hindi ASR...")
-        _whisper_pipe = hf_pipeline(
-            "automatic-speech-recognition",
-            model="openai/whisper-small",
-            device="cuda",
-        )
-        print("[ASR] Whisper small loaded.")
+    """Transcribe audio using collabora/whisper-large-v2-hindi via faster-whisper (CTranslate2)."""
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        import os
+        ct2_path = os.path.join(os.path.dirname(__file__), "models", "whisper-hindi-ct2")
+        if os.path.exists(ct2_path):
+            print(f"[ASR] Loading CTranslate2 model from {ct2_path}...")
+            _whisper_model = WhisperModel(ct2_path, device="cuda", compute_type="float16")
+        else:
+            print("[ASR] CT2 model not found, loading from HuggingFace (slower)...")
+            _whisper_model = WhisperModel("collabora/whisper-large-v2-hindi", device="cuda", compute_type="float16")
+        print("[ASR] Whisper loaded.")
 
     print("[ASR] Transcribing...")
-    result = _whisper_pipe(audio_path, return_timestamps=True, generate_kwargs={"language": "hi", "task": "transcribe"})
-    transcript = result["text"].strip()
-    print(f"[ASR] Transcript ({len(transcript)} chars): {transcript[:100]}...")
+    segments, info = _whisper_model.transcribe(audio_path, language="hi", task="transcribe")
+    transcript = " ".join(seg.text.strip() for seg in segments)
+
+    transcript = postprocess_transcript(transcript)
+
+    print(f"[ASR] Transcript ({len(transcript)} chars)")
     return transcript
 
 
@@ -397,6 +413,84 @@ def derive_checklists(danger_signs, visit_type):
     return maternal_ck, newborn_ck
 
 
+def validate_form_output(parsed, transcript):
+    """Post-extraction validation: strip hallucinated fields, apply range checks.
+
+    Common hallucination patterns on audio transcripts:
+      - patient.name = "दीदी" / "बहन" / "Patient" (generic address, not a name)
+      - patient.age = 30 (model's default guess)
+      - lab_results.blood_group / hiv_status invented when not discussed
+    """
+    if not isinstance(parsed, dict):
+        return parsed
+
+    t_lower = transcript.lower() if transcript else ""
+
+    # -- Name hallucination: generic Hindi address terms --
+    FAKE_NAMES = {"दीदी", "बहन", "बहनजी", "patient", "दी दी", "didi", "bahen"}
+    patient = parsed.get("patient") or {}
+    name = patient.get("name") or patient.get("patient_name")
+    if name and name.strip().lower() in FAKE_NAMES:
+        if "patient" in parsed and isinstance(parsed["patient"], dict):
+            for key in ("name", "patient_name"):
+                if key in parsed["patient"]:
+                    parsed["patient"][key] = None
+                    print(f"[VALIDATE] Stripped hallucinated name: {name}")
+
+    # -- Age hallucination: exactly 30 when not mentioned --
+    age = patient.get("age") or patient.get("patient_age")
+    if age == 30:
+        # Check if "30" or "तीस" actually appears in transcript
+        if "30" not in transcript and "तीस" not in transcript:
+            if "patient" in parsed and isinstance(parsed["patient"], dict):
+                for key in ("age", "patient_age"):
+                    if key in parsed["patient"]:
+                        parsed["patient"][key] = None
+                        print(f"[VALIDATE] Stripped hallucinated age: 30")
+
+    # -- Lab results hallucination: blood_group, HIV when not discussed --
+    lab = parsed.get("lab_results") or {}
+    BLOOD_GROUPS = {"a+", "a-", "b+", "b-", "ab+", "ab-", "o+", "o-"}
+    bg = lab.get("blood_group")
+    if bg and str(bg).strip().lower() in BLOOD_GROUPS:
+        bg_mentioned = any(kw in t_lower for kw in ["blood group", "ब्लड ग्रुप", "खून का ग्रुप", "रक्त समूह"])
+        if not bg_mentioned:
+            parsed.setdefault("lab_results", {})["blood_group"] = None
+            print(f"[VALIDATE] Stripped hallucinated blood_group: {bg}")
+
+    hiv = lab.get("hiv_status") or lab.get("hiv")
+    if hiv and str(hiv).strip().lower() in ("negative", "positive", "नेगेटिव", "पॉजिटिव"):
+        hiv_mentioned = any(kw in t_lower for kw in ["hiv", "एचआईवी", "एड्स"])
+        if not hiv_mentioned:
+            for key in ("hiv_status", "hiv"):
+                if key in parsed.get("lab_results", {}):
+                    parsed["lab_results"][key] = None
+                    print(f"[VALIDATE] Stripped hallucinated HIV: {hiv}")
+
+    # -- Range checks on vital signs --
+    RANGES = {
+        "bp_systolic": (60, 250), "bp_diastolic": (30, 150),
+        "weight_kg": (1, 200), "hemoglobin_gm_percent": (3, 20),
+        "gestational_weeks": (1, 45), "temperature_f": (90, 110),
+    }
+    for section in [parsed, parsed.get("vitals", {}), parsed.get("pregnancy", {}),
+                    parsed.get("anc_details", {}), parsed.get("newborn", {})]:
+        if not isinstance(section, dict):
+            continue
+        for field, (lo, hi) in RANGES.items():
+            val = section.get(field)
+            if val is not None:
+                try:
+                    num = float(val)
+                    if num < lo or num > hi:
+                        section[field] = None
+                        print(f"[VALIDATE] Out-of-range {field}={val} (valid: {lo}-{hi})")
+                except (ValueError, TypeError):
+                    pass
+
+    return parsed
+
+
 def extract_form(transcript, visit_type):
     """Extract structured form data from transcript."""
     schema = SCHEMAS.get(VISIT_TYPE_MAP.get(visit_type, "anc_visit"), SCHEMAS["anc_visit"])
@@ -405,7 +499,10 @@ def extract_form(transcript, visit_type):
         f"{transcript}\n\n"
         f"Output JSON schema:\n{json.dumps(schema, ensure_ascii=False)}"
     )
-    return run_inference(FORM_SYSTEM_PROMPT, user_prompt)
+    result = run_inference(FORM_SYSTEM_PROMPT, user_prompt)
+    if result.get("parsed") and isinstance(result["parsed"], dict):
+        result["parsed"] = validate_form_output(result["parsed"], transcript)
+    return result
 
 
 def extract_danger_signs(transcript, visit_type):
@@ -676,7 +773,7 @@ def process_audio(audio_path, visit_type_override):
         yield (status_pill("error", "No audio provided"), "", "", "", "")
         return
 
-    yield (status_pill("processing", "Transcribing Hindi audio (Gemma 4 E4B)..."), "", "", "", "")
+    yield (status_pill("processing", "Transcribing Hindi audio..."), "", "", "", "")
 
     try:
         transcript = transcribe_audio(audio_path)
@@ -815,6 +912,32 @@ button.tab-nav-button.selected, .tabs button.selected {
     color: #1e293b !important;
     border-color: #cbd5e1 !important;
 }
+/* Make audio upload/record buttons clearly visible */
+.gr-audio button, .gr-audio .upload-btn, .gr-audio [data-testid] button {
+    background: #f1f5f9 !important;
+    color: #0f766e !important;
+    border: 1.5px solid #cbd5e1 !important;
+    border-radius: 8px !important;
+    padding: 8px 16px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    min-height: 36px !important;
+}
+.gr-audio button:hover {
+    background: #ecfdf5 !important;
+    border-color: #0f766e !important;
+}
+/* Upload icon/area visibility */
+.gr-audio .icon-button, .gr-audio svg {
+    color: #0f766e !important;
+    opacity: 1 !important;
+}
+/* Audio waveform area */
+.gr-audio .waveform-container, .gr-audio .audio-container {
+    min-height: 80px !important;
+    background: #f8fafb !important;
+    border-radius: 8px !important;
+}
 
 /* ── Block borders & panels ── */
 .gr-block, .gr-panel, .gr-group {
@@ -899,17 +1022,21 @@ def build_app():
             with gr.Tab("Voice to Form", id="voice"):
                 gr.Markdown("Record or upload a Hindi ASHA home visit conversation. The system transcribes and extracts structured data.")
                 with gr.Row():
-                    audio_input = gr.Audio(label="Hindi Audio", type="filepath", sources=["microphone", "upload"])
-                    visit_type_audio = gr.Dropdown(
-                        choices=["Auto-detect", "ANC Visit", "PNC Visit", "Delivery", "Child Health"],
-                        value="Auto-detect", label="Visit Type"
-                    )
-                audio_btn = gr.Button("Process Audio", variant="primary", size="lg")
+                    with gr.Column(scale=3):
+                        audio_input = gr.Audio(
+                            label="Hindi Audio",
+                            type="filepath",
+                            sources=["microphone", "upload"],
+                        )
+                    with gr.Column(scale=1):
+                        visit_type_audio = gr.Dropdown(
+                            choices=["Auto-detect", "ANC Visit", "PNC Visit", "Delivery", "Child Health"],
+                            value="Auto-detect", label="Visit Type"
+                        )
+                        audio_btn = gr.Button("Process Audio", variant="primary", size="lg")
                 audio_status = gr.HTML(value=status_pill("ready", "Ready"))
 
-                with gr.Row():
-                    audio_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
-
+                audio_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
                 audio_time = gr.Textbox(label="Total Time", scale=0, interactive=False)
 
                 with gr.Row():
