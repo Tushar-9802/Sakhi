@@ -28,6 +28,11 @@ import gradio as gr
 MODEL_PATH = "./models/checkpoints/final"
 MAX_SEQ_LENGTH = 4096
 
+# Ollama config — set OLLAMA_MODEL to use Ollama instead of Unsloth
+# Use "sakhi" once fine-tuned GGUF is registered, or base model for now
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b-it-q4_K_M")
+USE_OLLAMA = os.environ.get("USE_OLLAMA", "1") == "1"
+
 # System prompts (same as training)
 FORM_SYSTEM_PROMPT = (
     "You are a clinical data extraction system for India's ASHA health worker program. "
@@ -206,7 +211,7 @@ def transcribe_audio(audio_path):
         print("[ASR] Whisper loaded.")
 
     print("[ASR] Transcribing...")
-    segments, info = _whisper_model.transcribe(audio_path, language="hi", task="transcribe")
+    segments, info = _whisper_model.transcribe(audio_path, language="hi", task="transcribe", vad_filter=True)
     transcript = " ".join(seg.text.strip() for seg in segments)
 
     transcript = postprocess_transcript(transcript)
@@ -216,7 +221,37 @@ def transcribe_audio(audio_path):
 
 
 def run_inference(system_prompt, user_prompt):
-    """Run model inference, return parsed JSON or raw text."""
+    """Run model inference via Ollama or Unsloth, return parsed JSON or raw text."""
+    if USE_OLLAMA:
+        return _run_inference_ollama(system_prompt, user_prompt)
+    return _run_inference_unsloth(system_prompt, user_prompt)
+
+
+def _run_inference_ollama(system_prompt, user_prompt):
+    """Run inference via Ollama API — fast GGUF on GPU."""
+    import ollama
+
+    t0 = time.time()
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        options={"temperature": 0.1, "num_ctx": 4096},
+    )
+    elapsed = time.time() - t0
+
+    response = resp.message.content
+    tok_s = resp.eval_count / (resp.eval_duration / 1e9) if resp.eval_duration else 0
+    print(f"[LLM] Ollama: {elapsed:.1f}s ({resp.eval_count} tok, {tok_s:.0f} tok/s)")
+
+    parsed = _parse_json_response(response)
+    return {"raw": response, "parsed": parsed, "time_s": elapsed}
+
+
+def _run_inference_unsloth(system_prompt, user_prompt):
+    """Run inference via Unsloth/transformers — slower but works without Ollama."""
     import torch
     model, tokenizer = load_model()
 
@@ -233,24 +268,24 @@ def run_inference(system_prompt, user_prompt):
     elapsed = time.time() - t0
 
     response = tokenizer.decode(output_ids[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+    parsed = _parse_json_response(response)
+    return {"raw": response, "parsed": parsed, "time_s": elapsed}
 
-    # Debug: log exact byte sequence of first 80 chars for diagnosing parse issues
+
+def _parse_json_response(response):
+    """Parse JSON from model response, handling markdown fences and quirks."""
     print(f"[DEBUG] raw response repr (first 80): {repr(response[:80])}")
 
     # Strip markdown fences — handle variations: ```json, ``` json, whitespace, BOM
-    clean = response.strip().lstrip('\ufeff')  # strip BOM if present
-    # Remove opening fence (``` or ```json with optional whitespace/newline)
+    clean = response.strip().lstrip('\ufeff')
     clean = re.sub(r'^`{3,}\s*(?:json)?\s*[\r\n]*', '', clean, flags=re.IGNORECASE)
-    # Remove closing fence
     clean = re.sub(r'[\r\n]*`{3,}\s*$', '', clean)
     clean = clean.strip()
 
     # Fix common model quirks
-    # If output starts with a key (no opening brace), wrap it
     if clean and clean[0] == '"' and not clean.startswith('{"') and not clean.startswith('["'):
         clean = "{" + clean
     if clean and clean[0] not in ('{', '['):
-        # Try to find the first { or [
         first_brace = min(
             (clean.find("{") if clean.find("{") >= 0 else len(clean)),
             (clean.find("[") if clean.find("[") >= 0 else len(clean)),
@@ -258,36 +293,28 @@ def run_inference(system_prompt, user_prompt):
         if first_brace < len(clean):
             print(f"[DEBUG] skipped leading junk: {repr(clean[:first_brace])}")
             clean = clean[first_brace:]
-    # Fix doubled quotes: ""key"" → "key", also handles triple+ quotes
     clean = re.sub(r'"{2,}([^"]+)"{2,}', r'"\1"', clean)
-    clean = re.sub(r'(?<=: )"{2,}', '"', clean)  # extra leading quotes in values
-    clean = re.sub(r'"{2,}(?=\s*[,\}\]])', '"', clean)  # extra trailing quotes
-    # Fix trailing commas before } or ] (common generation quirk)
+    clean = re.sub(r'(?<=: )"{2,}', '"', clean)
+    clean = re.sub(r'"{2,}(?=\s*[,\}\]])', '"', clean)
     clean = re.sub(r',\s*([}\]])', r'\1', clean)
 
     print(f"[DEBUG] cleaned JSON (first 120): {repr(clean[:120])}")
 
     try:
-        parsed = json.loads(clean)
+        return json.loads(clean)
     except json.JSONDecodeError as e:
         print(f"[DEBUG] JSON parse failed: {e}")
-        # Try to extract valid JSON from potentially truncated output
-        # Find the last complete } or ] and try parsing up to there
-        parsed = None
         for end_pos in range(len(clean), max(0, len(clean) - 200), -1):
             if clean[end_pos - 1] in ('}', ']'):
                 try:
                     parsed = json.loads(clean[:end_pos])
                     print(f"[DEBUG] recovered JSON by truncating at pos {end_pos}")
-                    break
+                    return parsed
                 except json.JSONDecodeError:
                     continue
 
-    if parsed is None:
-        # Dump full response for debugging
-        print(f"[DEBUG] FULL raw response ({len(response)} chars):\n{response}\n---END---")
-
-    return {"raw": response, "parsed": parsed, "time_s": elapsed}
+    print(f"[DEBUG] FULL raw response ({len(response)} chars):\n{response}\n---END---")
+    return None
 
 
 # ============================================================

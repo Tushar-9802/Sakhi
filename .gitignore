@@ -31,6 +31,10 @@ env/
 # === Claude Code ===
 .claude/
 
+# === Build artifacts ===
+llama.cpp/
+llama-cpp-bin/
+
 # === OS ===
 .DS_Store
 Thumbs.db
