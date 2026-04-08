@@ -238,7 +238,8 @@ def _run_inference_ollama(system_prompt, user_prompt):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        options={"temperature": 0.1, "num_ctx": 4096},
+        options={"temperature": 0.1, "num_ctx": 4096, "num_gpu": 999},
+        keep_alive="10m",
     )
     elapsed = time.time() - t0
 
