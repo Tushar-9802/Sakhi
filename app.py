@@ -692,44 +692,44 @@ def format_danger_html(data):
 
     # Referral banner
     colors = {
-        "refer_immediately": ("#dc2626", "#fef2f2", "IMMEDIATE REFERRAL REQUIRED"),
-        "refer_within_24h": ("#d97706", "#fffbeb", "REFER WITHIN 24 HOURS"),
-        "continue_monitoring": ("#2563eb", "#eff6ff", "CONTINUE MONITORING"),
-        "routine_followup": ("#16a34a", "#f0fdf4", "ROUTINE FOLLOW-UP"),
+        "refer_immediately": ("#ef4444", "rgba(239,68,68,0.1)", "IMMEDIATE REFERRAL"),
+        "refer_within_24h": ("#f59e0b", "rgba(245,158,11,0.1)", "REFER WITHIN 24H"),
+        "continue_monitoring": ("#3b82f6", "rgba(59,130,246,0.1)", "CONTINUE MONITORING"),
+        "routine_followup": ("#10b981", "rgba(16,185,129,0.1)", "ROUTINE FOLLOW-UP"),
     }
-    color, bg, label = colors.get(decision, ("#64748b", "#f8fafc", decision.upper()))
+    color, bg, label = colors.get(decision, ("#6b7280", "rgba(107,114,128,0.1)", decision.upper()))
 
-    html = f'<div class="danger-card" style="border-left: 4px solid {color};">'
-    html += f'<div class="referral-banner" style="background: {bg}; color: {color}; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-weight: 700; font-size: 15px;">{label}</div>'
+    html = f'<div class="danger-card" style="border-left: 3px solid {color};">'
+    html += f'<div style="background: {bg}; color: {color}; padding: 10px 16px; border-radius: 10px; margin-bottom: 16px; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase;">{label}</div>'
 
     if referral.get("reason"):
-        html += f'<div class="referral-reason" style="margin-bottom: 16px; color: #475569; font-size: 13px;">{html_mod.escape(referral["reason"])}</div>'
+        html += f'<div style="margin-bottom: 16px; color: #475569; font-size: 13px; line-height: 1.5;">{html_mod.escape(referral["reason"])}</div>'
 
     if signs:
-        html += f'<div class="signs-header" style="font-weight: 700; margin-bottom: 8px; color: #1e293b;">Danger Signs Detected: {len(signs)}</div>'
+        html += f'<div style="font-weight: 700; margin-bottom: 10px; color: #1e293b; font-size: 13px;">Danger Signs: {len(signs)}</div>'
         for s in signs:
             cat = s.get("category", "unknown")
             cat_colors = {
-                "immediate_referral": "#dc2626",
-                "urgent_care": "#d97706",
-                "monitor_closely": "#2563eb",
+                "immediate_referral": "#ef4444",
+                "urgent_care": "#f59e0b",
+                "monitor_closely": "#3b82f6",
             }
-            cat_color = cat_colors.get(cat, "#64748b")
+            cat_color = cat_colors.get(cat, "#6b7280")
             sign_name = s.get("sign", "Unknown")
             evidence = s.get("utterance_evidence", "")
             confidence = s.get("confidence", 0)
             clinical_val = s.get("clinical_value", "")
 
-            html += f'<div class="sign-item" style="border-left: 3px solid {cat_color}; padding: 8px 12px; margin: 8px 0; background: #f8fafc; border-radius: 0 8px 8px 0;">'
-            html += f'<div style="font-weight: 600; color: {cat_color};">{html_mod.escape(sign_name)}</div>'
-            html += f'<div style="font-size: 11px; color: #94a3b8; text-transform: uppercase;">{cat.replace("_", " ")} | confidence: {confidence}</div>'
+            html += f'<div style="border-left: 2px solid {cat_color}; padding: 10px 14px; margin: 8px 0; background: #f8fafc; border-radius: 0 10px 10px 0;">'
+            html += f'<div style="font-weight: 600; color: {cat_color}; font-size: 14px;">{html_mod.escape(sign_name)}</div>'
+            html += f'<div style="font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 2px;">{cat.replace("_", " ")}</div>'
             if clinical_val:
-                html += f'<div style="font-size: 13px; color: #1e293b; margin-top: 4px;">Value: {html_mod.escape(str(clinical_val))}</div>'
+                html += f'<div style="font-size: 13px; color: #1e293b; margin-top: 6px; font-variant-numeric: tabular-nums;">Value: <strong>{html_mod.escape(str(clinical_val))}</strong></div>'
             if evidence:
-                html += f'<div style="font-size: 13px; color: #475569; margin-top: 4px; font-style: italic; border-left: 2px solid #e2e8f0; padding-left: 8px;">"{html_mod.escape(evidence)}"</div>'
+                html += f'<div style="font-size: 12px; color: #64748b; margin-top: 6px; font-style: italic; border-left: 2px solid #e2e8f0; padding-left: 10px;">"{html_mod.escape(evidence)}"</div>'
             html += '</div>'
     else:
-        html += '<div style="color: #16a34a; font-weight: 600; font-size: 14px; padding: 12px; background: #f0fdf4; border-radius: 8px; text-align: center;">No danger signs detected — routine visit</div>'
+        html += '<div style="color: #059669; font-weight: 600; font-size: 13px; padding: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; text-align: center;">No danger signs detected</div>'
 
     # Checklists
     for ck_name, ck_label in [("maternal_danger_signs_checklist", "Maternal Checklist"), ("newborn_danger_signs_checklist", "Newborn Checklist")]:
@@ -829,200 +829,349 @@ def load_example(example_idx):
     return ""
 
 
+def set_uploaded_audio(uploaded_file):
+    """Normalize UploadButton payload to a filepath for gr.Audio(type='filepath')."""
+    if not uploaded_file:
+        return None
+    if isinstance(uploaded_file, str):
+        return uploaded_file
+    file_name = getattr(uploaded_file, "name", None)
+    if file_name:
+        return file_name
+    if isinstance(uploaded_file, dict):
+        return uploaded_file.get("path") or uploaded_file.get("name")
+    return None
+
+
 # ============================================================
-# CSS
+# CSS  — minimal: only styles custom HTML output cards
+# Gradio 6 theme handles all native widget colours.
 # ============================================================
 CUSTOM_CSS = """
-html { overflow-y: scroll !important; }
-
-/* ── Force light theme on all Gradio internals ── */
-.gradio-container, .gradio-container *,
-.gr-group, .gr-block, .gr-panel, .gr-box, .gr-form,
-.gr-input, .gr-input-label {
-    --body-background-fill: #f8fafb !important;
-    --block-background-fill: #ffffff !important;
-    --block-border-color: #d1dde6 !important;
-    --block-label-background-fill: #eef3f7 !important;
-    --block-label-text-color: #1e293b !important;
-    --block-title-text-color: #1e293b !important;
-    --body-text-color: #1e293b !important;
-    --input-background-fill: #ffffff !important;
-    --input-border-color: #cbd5e1 !important;
-    --input-text-color: #1e293b !important;
-    --color-accent-soft: #ecfdf5 !important;
-    --panel-background-fill: #ffffff !important;
-    --checkbox-background-color: #ffffff !important;
-    --shadow-drop: 0 1px 3px rgba(0,0,0,0.06) !important;
+html {
+    overflow-y: scroll !important;
 }
 
+/* ── App shell ── */
 .gradio-container {
-    max-width: 1100px !important;
+    max-width: 1120px !important;
     margin: 0 auto !important;
-    font-family: "Inter", "Segoe UI", system-ui, sans-serif !important;
-    background: #f8fafb !important;
-    color: #1e293b !important;
+    padding: 18px 22px 26px !important;
 }
 
-/* ── Inputs: textboxes, dropdowns, audio ── */
-textarea, input[type="text"], .gr-text-input,
-.gr-box textarea, .gr-box input {
-    background: #ffffff !important;
-    color: #1e293b !important;
-    border: 1.5px solid #cbd5e1 !important;
-    border-radius: 8px !important;
+/* ── Hero Header ── */
+.hero-header {
+    text-align: center;
+    padding: 32px 20px 20px;
+    margin-bottom: 10px;
+    position: relative;
 }
-textarea:focus, input[type="text"]:focus {
-    border-color: #0f766e !important;
-    box-shadow: 0 0 0 2px rgba(15,118,110,0.12) !important;
+.hero-header::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 80px; height: 3px;
+    background: linear-gradient(90deg, transparent, #0d9488, transparent);
+    border-radius: 2px;
 }
-textarea::placeholder, input::placeholder {
-    color: #94a3b8 !important;
+.hero-header h1 {
+    font-size: 34px;
+    font-weight: 800;
+    margin: 0;
+    background: linear-gradient(135deg, #0d9488 0%, #059669 50%, #10b981 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.5px;
 }
-
-/* ── Dropdowns ── */
-.gr-dropdown, select, .dropdown-container,
-[data-testid="dropdown"] {
-    background: #ffffff !important;
-    color: #1e293b !important;
-    border: 1.5px solid #cbd5e1 !important;
-    border-radius: 8px !important;
+.hero-header .tagline {
+    font-size: 14px;
+    color: #475569;
+    margin: 8px 0 0;
 }
-
-/* ── Labels ── */
-label, .gr-block label, .gr-input-label,
-span[data-testid="block-label"], .block-label {
-    color: #334155 !important;
-    font-weight: 600 !important;
-    font-size: 13px !important;
+.hero-header .tech-badge {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #0d9488;
+    background: rgba(13,148,136,0.08);
+    border: 1px solid rgba(16,185,129,0.2);
+    letter-spacing: 0.5px;
 }
 
 /* ── Tabs ── */
-.tabs, .tab-nav { border-bottom: 2px solid #e2e8f0 !important; }
-button.tab-nav-button, .tabs button {
-    color: #64748b !important;
-    font-weight: 500 !important;
-    background: transparent !important;
-    border: none !important;
-    padding: 10px 18px !important;
-    font-size: 14px !important;
+.tabs {
+    border-bottom: 1px solid #dbe4ed !important;
+    margin-bottom: 14px !important;
 }
-button.tab-nav-button.selected, .tabs button.selected {
-    color: #0f766e !important;
-    font-weight: 700 !important;
-    border-bottom: 3px solid #0f766e !important;
-}
-
-/* ── Markdown text ── */
-.gr-markdown, .gr-markdown p, .prose, .prose p {
-    color: #475569 !important;
-}
-
-/* ── Primary button ── */
-.gr-button-primary, button.primary {
-    background: #0f766e !important;
-    color: #fff !important;
-    border: none !important;
-    border-radius: 10px !important;
-    font-weight: 700 !important;
-    font-size: 15px !important;
-    padding: 12px 24px !important;
-    box-shadow: 0 2px 8px rgba(15,118,110,0.18) !important;
-    transition: background 0.2s !important;
-}
-.gr-button-primary:hover, button.primary:hover {
-    background: #115e59 !important;
-}
-
-/* ── Audio component ── */
-.gr-audio, .gr-audio * {
-    background: #ffffff !important;
-    color: #1e293b !important;
-    border-color: #cbd5e1 !important;
-}
-/* Make audio upload/record buttons clearly visible */
-.gr-audio button, .gr-audio .upload-btn, .gr-audio [data-testid] button {
-    background: #f1f5f9 !important;
-    color: #0f766e !important;
-    border: 1.5px solid #cbd5e1 !important;
-    border-radius: 8px !important;
-    padding: 8px 16px !important;
+.tabs button {
+    border-radius: 10px 10px 0 0 !important;
     font-weight: 600 !important;
-    cursor: pointer !important;
-    min-height: 36px !important;
+    font-size: 14px !important;
+    padding: 10px 14px !important;
 }
-.gr-audio button:hover {
-    background: #ecfdf5 !important;
-    border-color: #0f766e !important;
-}
-/* Upload icon/area visibility */
-.gr-audio .icon-button, .gr-audio svg {
+.tabs button.selected {
     color: #0f766e !important;
-    opacity: 1 !important;
-}
-/* Audio waveform area */
-.gr-audio .waveform-container, .gr-audio .audio-container {
-    min-height: 80px !important;
-    background: #f8fafb !important;
-    border-radius: 8px !important;
+    background: rgba(13,148,136,0.08) !important;
 }
 
-/* ── Block borders & panels ── */
-.gr-block, .gr-panel, .gr-group {
-    background: #ffffff !important;
-    border: 1px solid #e2e8f0 !important;
-    border-radius: 10px !important;
+/* ── Section cards ── */
+#voice-primary-card,
+#voice-transcript-card,
+#text-input-card,
+#voice-results-card,
+#text-results-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    padding: 14px;
 }
-
-/* ── Header ── */
-.app-header {
-    text-align: center; padding: 28px 0 18px 0; margin-bottom: 20px;
-    border-bottom: 2px solid #e2e8f0;
+#voice-primary-card,
+#text-input-card {
+    margin-top: 10px;
 }
-.app-header h1 { font-size: 28px; font-weight: 800; color: #0f766e; margin: 0; }
-.app-header .subtitle { font-size: 13px; color: #475569; margin: 4px 0 0 0; }
+#voice-transcript-card,
+#text-results-card {
+    margin-top: 12px;
+}
 
 /* ── Status pills ── */
 .status-pill {
-    display: inline-block; border-radius: 20px; padding: 6px 16px;
-    font-size: 12px; font-weight: 600; background: #f1f5f9;
-    border: 1px solid #e2e8f0; color: #64748b;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 20px;
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    color: #94a3b8;
 }
-.status-pill.ready { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
-.status-pill.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
-.status-pill.processing { background: #eff6ff; border-color: #93c5fd; color: #1e40af;
-    animation: pulse 1.5s ease-in-out infinite; }
-@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
-
-/* ── Result cards ── */
-.result-card {
-    background: #fff; border: 1px solid #d1dde6; border-radius: 12px;
-    padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+.status-pill::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #94a3b8;
 }
-.result-card h3 { margin: 0 0 12px 0; color: #0f766e; font-size: 15px; font-weight: 700; }
-.result-card.error { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
+.status-pill.ready { background:#ecfdf5; border-color:#a7f3d0; color:#065f46; }
+.status-pill.ready::before { background: #059669; }
+.status-pill.error { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+.status-pill.error::before { background: #dc2626; }
+.status-pill.processing {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+    color: #1e40af;
+    animation: pulse-glow 2s ease-in-out infinite;
+}
+.status-pill.processing::before {
+    background: #2563eb;
+    animation: dot-pulse 1s ease-in-out infinite;
+}
+@keyframes pulse-glow {
+    0%,100% { box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+    50%      { box-shadow: 0 0 12px 2px rgba(37,99,235,0.10); }
+}
+@keyframes dot-pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%     { opacity:.4; transform:scale(.7); }
+}
 
-/* ── Field rows (extracted data) ── */
-.field-row { display: flex; padding: 4px 0; font-size: 13px; border-bottom: 1px solid #f1f5f9; }
-.field-row.null { opacity: 0.45; }
-.field-label { font-weight: 600; color: #475569; min-width: 180px; flex-shrink: 0; }
+/* ── Result / danger cards ── */
+.result-card, .danger-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04);
+}
+.result-card h3 {
+    margin: 0 0 16px 0;
+    color: #0d9488;
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #e2e8f0;
+}
+.result-card.error {
+    border-color: rgba(239,68,68,.3);
+    background: rgba(239,68,68,.05);
+    color: #f87171;
+}
+
+/* ── Field rows (inside result cards) ── */
+.field-row {
+    display: flex;
+    padding: 6px 0;
+    font-size: 13px;
+    border-bottom: 1px solid #f1f5f9;
+}
+.field-row.null { opacity: 0.3; }
+.field-label {
+    font-weight: 600;
+    color: #475569;
+    min-width: 200px;
+    flex-shrink: 0;
+    font-size: 12px;
+}
 .field-value { color: #1e293b; }
 .field-value.null { color: #94a3b8; font-style: italic; }
-.field-value.numeric { color: #0f766e; font-weight: 700; }
-.field-group { margin-left: 16px; border-left: 2px solid #d1dde6; padding-left: 12px; }
-
-/* ── Danger card ── */
-.danger-card {
-    background: #fff; border: 1px solid #d1dde6; border-radius: 12px;
-    padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+.field-value.numeric { color: #0d9488; font-weight: 700; font-variant-numeric: tabular-nums; }
+.field-group { margin-left: 16px; border-left: 2px solid #d1dde6; padding-left: 14px; }
+.field-row.nested > .field-label {
+    color: #0d9488; font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.3px; padding-top: 8px;
 }
 
 /* ── About section ── */
-.about-section { font-size: 14px; line-height: 1.7; color: #334155; }
-.about-section h2 { color: #0f766e; font-size: 20px; margin-top: 24px; }
-.about-section h3 { color: #1e293b; font-size: 16px; }
-.about-section code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 12px; color: #0f766e; }
-.about-section table { background: #fff; }
-.about-section td { color: #334155; }
+.about-section { font-size: 14px; line-height: 1.8; color: #475569; }
+.about-section h2 { color: #0d9488; font-size: 22px; margin-top: 28px; font-weight: 700; }
+.about-section h3 { color: #1e293b; font-size: 16px; font-weight: 600; margin-top: 20px; }
+.about-section code {
+    background: #f8fafb; padding: 2px 8px; border-radius: 6px;
+    font-size: 12px; color: #0d9488; border: 1px solid #e2e8f0;
+}
+.about-section table {
+    background: #fff; border-radius: 10px;
+    overflow: hidden; width: 100%;
+    border-collapse: separate; border-spacing: 0;
+}
+.about-section td { color: #475569; padding: 10px 14px !important; border-bottom: 1px solid #e2e8f0; }
+.about-section tr:last-child td { border-bottom: none; }
+.about-section td:first-child { color: #1e293b; font-weight: 600; }
+.about-section strong { color: #1e293b; }
+.about-section ol, .about-section ul { padding-left: 20px; }
+.about-section li { margin: 6px 0; }
+
+/* ── Voice tab polish (strict no-jump build) ── */
+#voice-primary-card {
+    width: min(100%, 760px) !important;
+    max-width: 760px !important;
+    margin: 10px auto 0 !important;
+    overflow: hidden !important;
+    min-width: 0 !important;
+}
+#audio-shell {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+#audio-input {
+    border: 1px solid #d7e1ea;
+    border-radius: 12px;
+    padding: 12px;
+    background: #fbfdff;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    min-height: 128px;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+}
+#audio-input > div,
+#audio-input [data-testid="waveform-container"],
+#audio-input .wrap,
+#audio-input .waveform-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+}
+#audio-input [data-testid="audio"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    min-height: 112px;
+    height: auto !important;
+    overflow: visible !important;
+}
+#audio-placeholder {
+    height: 8px;
+}
+#audio-upload-wrap {
+    margin-top: 8px;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+#audio-upload-btn {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+#audio-upload-btn button {
+    min-height: 40px !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+
+#voice-controls {
+    align-items: stretch;
+    gap: 12px;
+    margin-top: 10px;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+#voice-transcript-card,
+#voice-results-card {
+    width: min(100%, 760px) !important;
+    max-width: 760px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+}
+#visit-type-audio,
+#process-audio-btn {
+    min-height: 48px;
+    min-width: 0 !important;
+}
+#visit-type-audio button,
+#process-audio-btn button {
+    min-height: 48px !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+}
+#process-audio-btn button {
+    width: 100%;
+    font-size: 15px;
+}
+#voice-primary-card .gr-row > *,
+#voice-primary-card .gr-column > * {
+    min-width: 0 !important;
+    max-width: 100% !important;
+}
+#visit-type-audio > label,
+#text-visit-type > label,
+#text-example > label,
+#audio-transcript > label {
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #475569 !important;
+}
+#text-controls {
+    gap: 10px;
+}
+#text-extract-btn button {
+    min-height: 46px !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+}
+
+footer { opacity: 0.3; }
 """
 
 
@@ -1032,45 +1181,90 @@ button.tab-nav-button.selected, .tabs button.selected {
 def build_app():
     init_schemas()
 
-    with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Base(), title="Sakhi (सखी) — ASHA Health Companion") as app:
-        # Header
+    theme = gr.themes.Soft(
+        primary_hue=gr.themes.colors.teal,
+        secondary_hue=gr.themes.colors.green,
+        neutral_hue=gr.themes.colors.slate,
+        font=gr.themes.GoogleFont("Inter"),
+    ).set(
+        body_background_fill="#f4f7fa",
+        block_background_fill="#ffffff",
+        block_border_color="#e2e8f0",
+        input_background_fill="#f8fafb",
+        button_primary_background_fill="linear-gradient(135deg, #0d9488 0%, #059669 100%)",
+        button_primary_background_fill_hover="linear-gradient(135deg, #0f766e 0%, #047857 100%)",
+        button_primary_text_color="#ffffff",
+    )
+
+    with gr.Blocks(
+        title="Sakhi (सखी) — ASHA Health Companion",
+        theme=theme,
+        css=CUSTOM_CSS,
+    ) as app:
+
+        # ── Header ──
         gr.HTML("""
-        <div class="app-header">
-            <h1>Sakhi <span style="font-weight: 400; color: #64748b;">(सखी)</span></h1>
-            <div class="subtitle">ASHA Health Worker AI Companion — Hindi Voice to MCTS Forms + Danger Sign Detection</div>
-            <div class="subtitle" style="margin-top: 2px; font-size: 11px; color: #94a3b8;">
-                Powered by Gemma 4 E4B | Fine-tuned via Unsloth | Fully Offline
-            </div>
+        <div class="hero-header">
+            <h1>Sakhi (सखी)</h1>
+            <div class="tagline">AI companion for India's 1 million ASHA health workers</div>
+            <div class="tech-badge">Gemma 4 E4B  ·  Offline-First  ·  Hindi Voice</div>
         </div>
         """)
 
         with gr.Tabs():
+
             # ── TAB 1: Voice to Form ──
-            with gr.Tab("Voice to Form", id="voice"):
-                gr.Markdown("Record or upload a Hindi ASHA home visit conversation. The system transcribes and extracts structured data.")
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        audio_input = gr.Audio(
-                            label="Hindi Audio",
-                            type="filepath",
-                            sources=["microphone", "upload"],
-                        )
-                    with gr.Column(scale=1):
+            with gr.Tab("🎙️ Voice to Form", id="voice"):
+                gr.Markdown("Record or upload a Hindi ASHA home visit conversation.")
+
+                with gr.Group(elem_id="voice-primary-card"):
+                    with gr.Row():
+                        with gr.Column(scale=1, min_width=0, elem_id="audio-shell"):
+                            audio_input = gr.Audio(
+                                label="Audio Input",
+                                show_label=False,
+                                type="filepath",
+                                sources=["microphone"],
+                                elem_id="audio-input",
+                            )
+                            gr.HTML("<div id='audio-placeholder'></div>")
+                            with gr.Row(elem_id="audio-upload-wrap"):
+                                audio_upload_btn = gr.UploadButton(
+                                    "Upload Audio File",
+                                    file_types=["audio"],
+                                    file_count="single",
+                                    elem_id="audio-upload-btn",
+                                )
+                    with gr.Row(elem_id="voice-controls"):
                         visit_type_audio = gr.Dropdown(
                             choices=["Auto-detect", "ANC Visit", "PNC Visit", "Delivery", "Child Health"],
-                            value="Auto-detect", label="Visit Type"
+                            value="Auto-detect",
+                            label="Visit Type",
+                            scale=2,
+                            elem_id="visit-type-audio",
                         )
-                        audio_btn = gr.Button("Process Audio", variant="primary", size="lg")
-                audio_status = gr.HTML(value=status_pill("ready", "Ready"))
+                        audio_btn = gr.Button(
+                            "Process Audio",
+                            variant="primary",
+                            size="lg",
+                            scale=1,
+                            elem_id="process-audio-btn",
+                        )
+                    audio_status = gr.HTML(value=status_pill("ready", "Ready"))
+                    audio_upload_btn.upload(
+                        fn=set_uploaded_audio,
+                        inputs=[audio_upload_btn],
+                        outputs=[audio_input],
+                    )
 
-                audio_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
-                audio_time = gr.Textbox(label="Total Time", scale=0, interactive=False)
+                with gr.Group(elem_id="voice-transcript-card"):
+                    audio_transcript = gr.Textbox(label="Transcript", lines=5, interactive=False, elem_id="audio-transcript")
+                audio_time = gr.Textbox(visible=False)
 
-                with gr.Row():
-                    with gr.Column():
-                        audio_form = gr.HTML(label="Form Extraction")
-                    with gr.Column():
-                        audio_danger = gr.HTML(label="Danger Signs")
+                # Outputs — side by side (these are wide enough to share a row)
+                with gr.Row(equal_height=False, elem_id="voice-results-card"):
+                    audio_form = gr.HTML(label="Form Extraction")
+                    audio_danger = gr.HTML(label="Danger Signs")
 
                 audio_btn.click(
                     fn=process_audio,
@@ -1079,39 +1273,40 @@ def build_app():
                 )
 
             # ── TAB 2: Text to Form ──
-            with gr.Tab("Text to Form", id="text"):
-                gr.Markdown("Paste a Hindi ASHA home visit conversation transcript for extraction.")
+            with gr.Tab("📋 Text to Form", id="text"):
+                gr.Markdown("Paste a Hindi ASHA home visit conversation transcript.")
 
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        text_input = gr.Textbox(
-                            label="Hindi Transcript",
-                            placeholder="Paste ASHA home visit conversation here...",
-                            lines=12,
-                        )
-                    with gr.Column(scale=1):
+                with gr.Group(elem_id="text-input-card"):
+                    text_input = gr.Textbox(
+                        label="Hindi Transcript",
+                        placeholder="Paste ASHA home visit conversation here...",
+                        lines=10,
+                    )
+                    with gr.Row(elem_id="text-controls"):
                         visit_type_text = gr.Dropdown(
                             choices=["Auto-detect", "ANC Visit", "PNC Visit", "Delivery", "Child Health"],
-                            value="Auto-detect", label="Visit Type"
+                            value="Auto-detect",
+                            label="Visit Type",
+                            scale=1,
+                            elem_id="text-visit-type",
                         )
                         example_dropdown = gr.Dropdown(
-                            choices=[("— Select —", None)] + [(ex[0], i) for i, ex in enumerate(EXAMPLE_TRANSCRIPTS)],
+                            choices=[("-- Select Example --", None)] + [(ex[0], i) for i, ex in enumerate(EXAMPLE_TRANSCRIPTS)],
                             value=None,
-                            label="Load Example", type="value",
+                            label="Load Example",
+                            type="value",
+                            scale=1,
+                            elem_id="text-example",
                         )
-                        text_btn = gr.Button("Extract", variant="primary", size="lg")
+                    text_btn = gr.Button("Extract Structured Form", variant="primary", size="lg", elem_id="text-extract-btn")
+                    text_status = gr.HTML(value=status_pill("ready", "Ready"))
+                text_time = gr.Textbox(visible=False)
 
                 example_dropdown.change(fn=load_example, inputs=[example_dropdown], outputs=[text_input])
 
-                text_status = gr.HTML(value=status_pill("ready", "Ready"))
-
-                text_time = gr.Textbox(label="Total Time", scale=0, interactive=False)
-
-                with gr.Row():
-                    with gr.Column():
-                        text_form = gr.HTML(label="Form Extraction")
-                    with gr.Column():
-                        text_danger = gr.HTML(label="Danger Signs")
+                with gr.Row(equal_height=False, elem_id="text-results-card"):
+                    text_form = gr.HTML(label="Form Extraction")
+                    text_danger = gr.HTML(label="Danger Signs")
 
                 text_btn.click(
                     fn=process_transcript,
@@ -1137,7 +1332,7 @@ def build_app():
 
                 <h3>How It Works</h3>
                 <p>
-                    Sakhi uses a single <strong>Gemma 4 E4B</strong> model, fine-tuned via <strong>Unsloth</strong> (LoRA),
+                    Sakhi uses <strong>Gemma 4 E4B</strong> with structured prompting
                     to extract structured data from Hindi home visit conversations:
                 </p>
                 <ol>
