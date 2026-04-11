@@ -228,7 +228,7 @@ def run_inference(system_prompt, user_prompt):
 
 
 def _run_inference_ollama(system_prompt, user_prompt):
-    """Run inference via Ollama API — fast GGUF on GPU."""
+    """Run inference via Ollama API — fast GGUF on GPU with JSON mode."""
     import ollama
 
     t0 = time.time()
@@ -238,6 +238,7 @@ def _run_inference_ollama(system_prompt, user_prompt):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
+        format="json",
         options={"temperature": 0.1, "num_ctx": 4096, "num_gpu": 999},
         keep_alive="10m",
     )
@@ -247,7 +248,12 @@ def _run_inference_ollama(system_prompt, user_prompt):
     tok_s = resp.eval_count / (resp.eval_duration / 1e9) if resp.eval_duration else 0
     print(f"[LLM] Ollama: {elapsed:.1f}s ({resp.eval_count} tok, {tok_s:.0f} tok/s)")
 
-    parsed = _parse_json_response(response)
+    # format="json" guarantees valid JSON — parse directly
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        print(f"[WARN] Ollama JSON mode parse failed, falling back to heuristic parser")
+        parsed = _parse_json_response(response)
     return {"raw": response, "parsed": parsed, "time_s": elapsed}
 
 

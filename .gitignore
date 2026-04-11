@@ -99,6 +99,7 @@ credentials/
 .coverage
 htmlcov/
 *.cover
+test_audio
 
 # === Temporary / scratch files ===
 *.bak

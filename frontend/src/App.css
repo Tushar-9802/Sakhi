@@ -264,6 +264,88 @@ select {
   margin-top: 6px;
 }
 
+.export-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.about-card h2 {
+  color: #0f766e;
+  margin-top: 0;
+}
+
+.about-card h3 {
+  color: #0f766e;
+  margin-top: 20px;
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+.about-card p {
+  color: #334155;
+  line-height: 1.6;
+  margin: 4px 0 8px;
+}
+
+.about-card ul {
+  padding-left: 20px;
+  color: #334155;
+  line-height: 1.8;
+}
+
+.pipeline-steps {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 10px;
+  background: #f0fdf9;
+  border: 1px solid #d1f5ea;
+  border-radius: 10px;
+  padding: 10px 14px;
+  align-items: center;
+}
+
+.step strong {
+  color: #0f766e;
+}
+
+.step span {
+  color: #475569;
+  font-size: 14px;
+}
+
+.tech-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tech-item {
+  background: #f8fbfd;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: grid;
+  gap: 2px;
+}
+
+.tech-item strong {
+  color: #0f766e;
+  font-size: 13px;
+}
+
+.tech-item span {
+  color: #475569;
+  font-size: 14px;
+}
+
 @media (max-width: 960px) {
   .hero h1 {
     font-size: 34px;
@@ -273,6 +355,12 @@ select {
     grid-template-columns: 1fr;
   }
   .results-grid {
+    grid-template-columns: 1fr;
+  }
+  .step {
+    grid-template-columns: 1fr;
+  }
+  .tech-grid {
     grid-template-columns: 1fr;
   }
 }
