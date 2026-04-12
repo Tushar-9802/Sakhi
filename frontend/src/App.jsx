@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { saveRecording, getQueue, getRecording, removeRecording, clearQueue, updateRecordingStatus } from './offlineQueue'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`
 const VISIT_OPTIONS = [
   { label: 'Auto-detect', value: 'auto' },
   { label: 'ANC Visit', value: 'anc_visit' },
@@ -111,6 +112,19 @@ function App() {
 
   const [pipelineStages, setPipelineStages] = useState([])
 
+  // Field Mode state
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [offlineQueue, setOfflineQueue] = useState([])
+  const [fieldRecording, setFieldRecording] = useState(false)
+  const [syncingId, setSyncingId] = useState(null)
+  const fieldRecorderRef = useRef(null)
+  const fieldStreamRef = useRef(null)
+  const fieldChunksRef = useRef([])
+  const [fieldVisitType, setFieldVisitType] = useState('auto')
+  const [fieldError, setFieldError] = useState('')
+  const [playingId, setPlayingId] = useState(null)
+  const playAudioRef = useRef(null)
+
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
       .then((r) => r.json())
@@ -139,9 +153,172 @@ function App() {
     }
   }, [audioUrl])
 
+  // Online/offline detection + queue loading
+  useEffect(() => {
+    const goOnline = () => setIsOnline(true)
+    const goOffline = () => setIsOnline(false)
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    loadQueue()
+    return () => {
+      window.removeEventListener('online', goOnline)
+      window.removeEventListener('offline', goOffline)
+    }
+  }, [])
+
+  async function loadQueue() {
+    const q = await getQueue()
+    setOfflineQueue(q)
+  }
+
+  async function startFieldRecording() {
+    setFieldError('')
+    // Stop any active recorders first
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    if (fieldRecorderRef.current && fieldRecorderRef.current.state !== 'inactive') {
+      fieldRecorderRef.current.stop()
+    }
+    // Release all mic streams
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+    if (fieldStreamRef.current) {
+      fieldStreamRef.current.getTracks().forEach((t) => t.stop())
+      fieldStreamRef.current = null
+    }
+    // Small delay to let the OS release the device
+    await new Promise((r) => setTimeout(r, 300))
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+      })
+      fieldStreamRef.current = stream
+      const recorder = new MediaRecorder(stream)
+      fieldChunksRef.current = []
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) fieldChunksRef.current.push(e.data)
+      }
+      recorder.onstop = async () => {
+        const blob = new Blob(fieldChunksRef.current, { type: 'audio/webm' })
+        stream.getTracks().forEach((t) => t.stop())
+        fieldStreamRef.current = null
+        await saveRecording(blob, fieldVisitType)
+        await loadQueue()
+      }
+      fieldRecorderRef.current = recorder
+      recorder.start()
+      setFieldRecording(true)
+    } catch (err) {
+      setFieldError(`Microphone error: ${err.name}: ${err.message}`)
+    }
+  }
+
+  function stopFieldRecording() {
+    if (!fieldRecorderRef.current) return
+    fieldRecorderRef.current.stop()
+    setFieldRecording(false)
+  }
+
+  async function syncRecording(id) {
+    setSyncingId(id)
+    setPipelineStages([])
+    setVoiceState({ loading: true, error: '', transcript: '', visitType: '', form: null, danger: null, timing: null })
+    setActiveTab('voice')
+
+    const entry = await getRecording(id)
+    if (!entry) { setSyncingId(null); return }
+
+    await updateRecordingStatus(id, 'processing')
+    await loadQueue()
+
+    const file = new File([entry.audioBlob], `field-${entry.id}.webm`, { type: entry.audioType })
+    const formData = new FormData()
+    formData.append('audio', file)
+    formData.append('visit_type', entry.visitType)
+
+    try {
+      const res = await fetch(`${API_BASE}/api/process-audio-stream`, { method: 'POST', body: formData })
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      await new Promise((resolve, reject) => {
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) { resolve(); return }
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() || ''
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const evt = JSON.parse(line.slice(6))
+              handleSSE(evt, 'voice', VOICE_STAGE_META)
+            }
+            read()
+          }).catch(reject)
+        }
+        read()
+      })
+
+      await removeRecording(id)
+      await loadQueue()
+    } catch (err) {
+      await updateRecordingStatus(id, 'pending')
+      await loadQueue()
+      setVoiceState((s) => ({ ...s, loading: false, error: `Sync failed: ${err.message}` }))
+    }
+    setSyncingId(null)
+  }
+
+  async function syncAll() {
+    const pending = offlineQueue.filter((e) => e.status === 'pending')
+    for (const entry of pending) {
+      await syncRecording(entry.id)
+    }
+  }
+
+  async function removeFromQueue(id) {
+    await removeRecording(id)
+    await loadQueue()
+  }
+
+  async function clearAllQueue() {
+    await clearQueue()
+    await loadQueue()
+  }
+
+  async function playRecording(id) {
+    if (playingId === id) {
+      if (playAudioRef.current) { playAudioRef.current.pause(); playAudioRef.current = null }
+      setPlayingId(null)
+      return
+    }
+    if (playAudioRef.current) { playAudioRef.current.pause(); playAudioRef.current = null }
+    const entry = await getRecording(id)
+    if (!entry) return
+    const url = URL.createObjectURL(entry.audioBlob)
+    const audio = new Audio(url)
+    audio.onended = () => { URL.revokeObjectURL(url); setPlayingId(null); playAudioRef.current = null }
+    playAudioRef.current = audio
+    setPlayingId(id)
+    audio.play()
+  }
+
   const dangerSigns = useMemo(() => textState.danger?.danger_signs || voiceState.danger?.danger_signs || [], [textState.danger, voiceState.danger])
 
   async function startRecording() {
+    // Release any existing mic streams first
+    if (fieldStreamRef.current) {
+      fieldStreamRef.current.getTracks().forEach((t) => t.stop())
+      fieldStreamRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
@@ -374,6 +551,9 @@ function App() {
         <button className={activeTab === 'text' ? 'active' : ''} onClick={() => setActiveTab('text')}>
           Text to Form
         </button>
+        <button className={activeTab === 'field' ? 'active' : ''} onClick={() => setActiveTab('field')}>
+          Field Mode {offlineQueue.length > 0 ? `(${offlineQueue.length})` : ''}
+        </button>
         <button className={activeTab === 'about' ? 'active' : ''} onClick={() => setActiveTab('about')}>
           About &amp; Impact
         </button>
@@ -448,6 +628,83 @@ function App() {
               placeholder="Paste Hindi conversation transcript here..."
             />
           </div>
+        </section>
+      )}
+
+      {activeTab === 'field' && (
+        <section className="panel">
+          <h2>Field Mode — Record Now, Process Later</h2>
+          <div className="card">
+            <div className={`connectivity-badge ${isOnline ? 'online' : 'offline'}`}>
+              {isOnline ? 'Connected — ready to sync' : 'Offline — recordings saved locally'}
+            </div>
+            <p className="field-desc">
+              Record ASHA conversations during home visits. Audio is saved on your device
+              and processed when you return to the health center.
+            </p>
+            <div className="audio-tools">
+              <button
+                className={`btn ${fieldRecording ? 'danger' : 'primary'}`}
+                onClick={fieldRecording ? stopFieldRecording : startFieldRecording}
+              >
+                {fieldRecording ? 'Stop & Save' : 'Record Visit'}
+              </button>
+              <select value={fieldVisitType} onChange={(e) => setFieldVisitType(e.target.value)}>
+                {VISIT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            {fieldError && <div className="error-banner">{fieldError}</div>}
+          </div>
+
+          {offlineQueue.length > 0 && (
+            <div className="card">
+              <div className="queue-header">
+                <h3>Saved Recordings ({offlineQueue.length})</h3>
+                <div className="queue-actions">
+                  {isOnline && (
+                    <button className="btn primary" onClick={syncAll} disabled={syncingId != null}>
+                      Sync All
+                    </button>
+                  )}
+                  <button className="btn secondary" onClick={clearAllQueue}>Clear All</button>
+                </div>
+              </div>
+              <div className="queue-list">
+                {offlineQueue.map((entry) => (
+                  <div className={`queue-item ${entry.status}`} key={entry.id}>
+                    <div className="queue-meta">
+                      <strong>{entry.label}</strong>
+                      <span>{entry.date}</span>
+                      <span>{prettyLabel(entry.visitType)}</span>
+                      <span>{(entry.size / 1024).toFixed(0)} KB</span>
+                      <span className={`queue-status ${entry.status}`}>
+                        {entry.status === 'pending' ? 'Pending' : entry.status === 'processing' ? 'Processing...' : entry.status}
+                      </span>
+                    </div>
+                    <div className="queue-item-actions">
+                      <button className="btn secondary" onClick={() => playRecording(entry.id)}>
+                        {playingId === entry.id ? 'Stop' : 'Play'}
+                      </button>
+                      {isOnline && entry.status === 'pending' && (
+                        <button className="btn secondary" onClick={() => syncRecording(entry.id)} disabled={syncingId != null}>
+                          Sync
+                        </button>
+                      )}
+                      <button className="btn secondary" onClick={() => removeFromQueue(entry.id)}>Remove</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {offlineQueue.length === 0 && (
+            <div className="card">
+              <p>No recordings saved. Record a visit above — it will be stored on your device for later processing.</p>
+            </div>
+          )}
         </section>
       )}
 
