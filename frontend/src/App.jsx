@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -9,6 +9,37 @@ const VISIT_OPTIONS = [
   { label: 'Delivery', value: 'delivery' },
   { label: 'Child Health', value: 'child_health' },
 ]
+
+const VOICE_STAGE_META = {
+  asr: 'Transcribing audio...',
+  normalize: 'Normalizing Hindi numbers...',
+  detect: 'Detecting visit type...',
+  form: 'Extracting structured form...',
+  danger: 'Detecting danger signs...',
+}
+const TEXT_STAGE_META = {
+  detect: 'Detecting visit type...',
+  form: 'Extracting structured form...',
+  danger: 'Detecting danger signs...',
+}
+
+function PipelineProgress({ stages }) {
+  return (
+    <div className="pipeline-progress">
+      {stages.map((stage) => (
+        <div className={`progress-step ${stage.status}`} key={stage.key}>
+          <span className="step-icon">
+            {stage.status === 'done' ? '\u2713' : stage.status === 'running' ? '\u25CF' : '\u25CB'}
+          </span>
+          <span className="step-label">
+            {stage.label}
+            {stage.status === 'done' && stage.time != null && <span className="step-time"> ({stage.time}s)</span>}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function prettyLabel(text) {
   return String(text || '')
@@ -41,6 +72,10 @@ function App() {
   const [activeTab, setActiveTab] = useState('voice')
   const [health, setHealth] = useState('Checking backend...')
   const [examples, setExamples] = useState([])
+  const [history, setHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sakhi_history') || '[]') } catch { return [] }
+  })
+  const [viewingHistory, setViewingHistory] = useState(null)
 
   const [voiceVisitType, setVoiceVisitType] = useState('auto')
   const [textVisitType, setTextVisitType] = useState('auto')
@@ -73,6 +108,8 @@ function App() {
     danger: null,
     timing: null,
   })
+
+  const [pipelineStages, setPipelineStages] = useState([])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
@@ -145,62 +182,124 @@ function App() {
     setVoiceState((s) => ({ ...s, error: '' }))
   }
 
-  async function processVoice() {
+  function handleSSE(evt, source, stageMeta) {
+    if (evt.error) {
+      const setter = source === 'voice' ? setVoiceState : setTextState
+      setter((s) => ({ ...s, loading: false, error: evt.error }))
+      return
+    }
+
+    if (evt.stage === 'complete') {
+      const setter = source === 'voice' ? setVoiceState : setTextState
+      setter({
+        loading: false,
+        error: '',
+        transcript: evt.transcript || '',
+        visitType: evt.visit_type || '',
+        form: evt.form || {},
+        danger: evt.danger || {},
+        timing: evt.timing || {},
+      })
+      setPipelineStages((prev) => prev.map((s) => ({ ...s, status: 'done' })))
+      saveToHistory(source, evt.visit_type, evt.form, evt.danger, evt.transcript || null, evt.timing)
+      return
+    }
+
+    if (evt.status === 'running') {
+      const label = stageMeta[evt.stage] || evt.stage
+      setPipelineStages((prev) => {
+        const exists = prev.find((s) => s.key === evt.stage)
+        if (exists) return prev.map((s) => s.key === evt.stage ? { ...s, status: 'running' } : s)
+        return [...prev, { key: evt.stage, label, status: 'running', time: null }]
+      })
+    }
+
+    if (evt.status === 'done') {
+      setPipelineStages((prev) =>
+        prev.map((s) => s.key === evt.stage ? { ...s, status: 'done', time: evt.time ?? null } : s)
+      )
+      if (evt.transcript) {
+        setVoiceState((s) => ({ ...s, transcript: evt.transcript }))
+      }
+    }
+  }
+
+  function processVoice() {
     if (!audioFile) {
       setVoiceState((s) => ({ ...s, error: 'Upload or record audio first.' }))
       return
     }
     setVoiceState({ loading: true, error: '', transcript: '', visitType: '', form: null, danger: null, timing: null })
+    setPipelineStages([])
+
     const formData = new FormData()
     formData.append('audio', audioFile)
     formData.append('visit_type', voiceVisitType)
-    try {
-      const res = await fetch(`${API_BASE}/api/process-audio`, { method: 'POST', body: formData })
-      const data = await res.json()
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'Audio processing failed')
-      }
-      setVoiceState({
-        loading: false,
-        error: '',
-        transcript: data.transcript || '',
-        visitType: data.visit_type || '',
-        form: data.form || {},
-        danger: data.danger || {},
-        timing: data.timing || {},
+
+    fetch(`${API_BASE}/api/process-audio-stream`, { method: 'POST', body: formData })
+      .then((res) => {
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) return
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() || ''
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const evt = JSON.parse(line.slice(6))
+              handleSSE(evt, 'voice', VOICE_STAGE_META)
+            }
+            read()
+          })
+        }
+        read()
       })
-    } catch (err) {
-      setVoiceState({ loading: false, error: err.message, transcript: '', visitType: '', form: null, danger: null, timing: null })
-    }
+      .catch((err) => {
+        setVoiceState((s) => ({ ...s, loading: false, error: err.message }))
+      })
   }
 
-  async function processText() {
+  function processText() {
     if (!textInput.trim()) {
       setTextState((s) => ({ ...s, error: 'Transcript is empty.' }))
       return
     }
     setTextState({ loading: true, error: '', visitType: '', form: null, danger: null, timing: null })
-    try {
-      const res = await fetch(`${API_BASE}/api/process-text`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript: textInput, visit_type: textVisitType }),
+    setPipelineStages([])
+
+    fetch(`${API_BASE}/api/process-text-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: textInput, visit_type: textVisitType }),
+    })
+      .then((res) => {
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) return
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() || ''
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const evt = JSON.parse(line.slice(6))
+              handleSSE(evt, 'text', TEXT_STAGE_META)
+            }
+            read()
+          })
+        }
+        read()
       })
-      const data = await res.json()
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'Text processing failed')
-      }
-      setTextState({
-        loading: false,
-        error: '',
-        visitType: data.visit_type || '',
-        form: data.form || {},
-        danger: data.danger || {},
-        timing: data.timing || {},
+      .catch((err) => {
+        setTextState((s) => ({ ...s, loading: false, error: err.message }))
       })
-    } catch (err) {
-      setTextState({ loading: false, error: err.message, visitType: '', form: null, danger: null, timing: null })
-    }
   }
 
   function onSelectExample(label) {
@@ -234,6 +333,24 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  const saveToHistory = useCallback((source, visitType, form, danger, transcript, timing) => {
+    const entry = {
+      id: Date.now(),
+      date: new Date().toLocaleString('en-IN'),
+      source,
+      visitType,
+      form,
+      danger,
+      transcript: transcript || null,
+      timing,
+    }
+    setHistory((prev) => {
+      const updated = [entry, ...prev].slice(0, 50)
+      localStorage.setItem('sakhi_history', JSON.stringify(updated))
+      return updated
+    })
+  }, [])
+
   const activeState = activeTab === 'voice' ? voiceState : textState
 
   return (
@@ -260,6 +377,11 @@ function App() {
         <button className={activeTab === 'about' ? 'active' : ''} onClick={() => setActiveTab('about')}>
           About &amp; Impact
         </button>
+        {history.length > 0 && (
+          <button className={activeTab === 'history' ? 'active' : ''} onClick={() => { setActiveTab('history'); setViewingHistory(null) }}>
+            History ({history.length})
+          </button>
+        )}
       </div>
 
       {activeTab === 'voice' && (
@@ -410,9 +532,79 @@ function App() {
         </section>
       )}
 
+      {activeTab === 'history' && (
+        <section className="panel">
+          {viewingHistory ? (
+            <div className="card">
+              <div className="history-detail-header">
+                <button className="btn secondary" onClick={() => setViewingHistory(null)}>&larr; Back</button>
+                <h3>{prettyLabel(viewingHistory.visitType)} — {viewingHistory.date}</h3>
+              </div>
+              {viewingHistory.transcript && (
+                <div style={{ marginBottom: 12 }}>
+                  <h4 style={{ color: '#0f766e', marginBottom: 4 }}>Transcript</h4>
+                  <pre className="transcript">{viewingHistory.transcript}</pre>
+                </div>
+              )}
+              <div className="results-grid">
+                <div>
+                  <h4 style={{ color: '#0f766e', marginBottom: 8 }}>Form Data</h4>
+                  <div className="kv-grid">
+                    {keyValueRows(viewingHistory.form).map((row) => (
+                      <div className="kv-row" key={`${row.key}-${row.value}`}>
+                        <span>{row.key}</span>
+                        <strong>{String(row.value)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 style={{ color: '#0f766e', marginBottom: 8 }}>Danger Signs</h4>
+                  <p className="referral">{prettyLabel(viewingHistory.danger?.referral_decision?.decision || 'No referral')}</p>
+                  {(viewingHistory.danger?.danger_signs || []).map((item, idx) => (
+                    <div className="danger-item" key={`${item.sign}-${idx}`}>
+                      <strong>{item.sign}</strong>
+                      <span>{prettyLabel(item.category)}</span>
+                    </div>
+                  ))}
+                  {!(viewingHistory.danger?.danger_signs || []).length && <p>No danger signs detected.</p>}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="history-header">
+                <h2>Visit History</h2>
+                <button className="btn secondary" onClick={() => { setHistory([]); localStorage.removeItem('sakhi_history') }}>Clear All</button>
+              </div>
+              <div className="history-list">
+                {history.map((entry) => (
+                  <div className="card history-entry" key={entry.id} onClick={() => setViewingHistory(entry)}>
+                    <div className="history-meta">
+                      <strong>{prettyLabel(entry.visitType)}</strong>
+                      <span>{entry.source === 'voice' ? 'Voice' : 'Text'}</span>
+                      <span>{entry.date}</span>
+                      {entry.timing?.total_s && <span>{entry.timing.total_s}s</span>}
+                    </div>
+                    {entry.transcript && <p className="history-preview">{entry.transcript.slice(0, 100)}...</p>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
       {activeState.error && <div className="error-banner">{activeState.error}</div>}
 
-      {(activeState.form || activeState.danger || activeState.loading) && (
+      {activeState.loading && pipelineStages.length > 0 && (
+        <div className="card">
+          <h3>Processing Pipeline</h3>
+          <PipelineProgress stages={pipelineStages} />
+        </div>
+      )}
+
+      {(activeState.form || activeState.danger) && (
         <section className="results-grid">
           <div className="card">
             <h3>

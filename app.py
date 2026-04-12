@@ -330,27 +330,37 @@ def _parse_json_response(response):
 def detect_visit_type(transcript):
     """Heuristic visit type detection from transcript content."""
     t = transcript.lower()
-    # ANC keywords — check first (most common), broad matching
+    # Delivery — check first, most specific keywords
+    if any(kw in t for kw in ["डिलीवरी हो गई", "डिलीवरी हुई", "delivery हुई",
+                               "डिलीवरी कब हुई", "delivery कब",
+                               "जन्म हुआ", "पैदा हुआ", "प्रसव हुआ",
+                               "लड़का हुआ", "लड़की हुई", "लड़की हुआ",
+                               "घर पर ही हो गया", "घर पर हुई", "घर पर हुआ",
+                               "ऑपरेशन से हुई", "caesarean", "सिजेरियन",
+                               "जन्म का वजन", "birth weight", "birth_weight",
+                               "जन्म के समय", "normal delivery", "दाई ने"]):
+        return "delivery"
+    # ANC — check before PNC/child (broad keywords like टीका overlap)
     if any(kw in t for kw in ["गर्भ", "प्रेग्नेंसी", "pregnancy", "anc", "पेट में बच्चा",
-                               "हफ्ते की", "हफ्ते हो", "महीने की", "महीने हो",
+                               "गर्भवती", "हफ्ते की", "हफ्ते हो", "महीने की",
                                "lmp", "edd", "bp चेक", "hb ", "ifa", "tt का टीका",
                                "बच्चे की हलचल", "fetal", "डिलीवरी कहाँ", "डिलीवरी के लिए",
                                "जन्म के लिए तैयारी", "birth preparedness"]):
         return "anc_visit"
-    # PNC — check before delivery (delivery keywords overlap)
+    # PNC — postpartum mother/newborn care
     if any(kw in t for kw in ["नवजात", "newborn", "दूध पीना", "दूध नहीं पीता", "दूध पीता",
-                               "दूध पिला", "नाभि", "cord", "नाल", "स्तनपान",
+                               "दूध पी रहा", "दूध नहीं पी", "दूध पिला",
+                               "नाभि", "cord", "नाल", "स्तनपान",
                                "breastfeed", "imnci", "hbnc", "डिलीवरी के बाद",
-                               "hbnc", "pnc"]):
+                               "डिलीवरी को", "delivery को", "pnc",
+                               "खून बहना", "खून आ रहा", "pad ", "पैड "]):
         return "pnc_visit"
-    # Delivery — only if actually about the delivery event
-    if any(kw in t for kw in ["डिलीवरी हो गई", "डिलीवरी हुई", "delivery हुई",
-                               "जन्म हुआ", "पैदा हुआ", "प्रसव हुआ",
-                               "ऑपरेशन से हुई", "caesarean", "सिजेरियन",
-                               "जन्म का वजन", "birth weight"]):
-        return "delivery"
-    if any(kw in t for kw in ["बच्चा", "child", "टीका", "vaccine", "deworming",
-                               "vitamin a", "hbyc", "महीने का"]):
+    # Child health — older infants/children
+    if any(kw in t for kw in ["बच्चे को", "बच्चा कैसा", "child", "टीका", "vaccine",
+                               "deworming", "vitamin a", "hbyc",
+                               "महीने का", "महीने है", "दस्त", "diarrhea",
+                               "खाता है", "खेलता है", "आँखें धँसी",
+                               "सुस्त है", "सुस्त हो", "बहुत सुस्त"]):
         return "child_health"
     return "anc_visit"
 

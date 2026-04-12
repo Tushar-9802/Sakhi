@@ -17,8 +17,9 @@ import tempfile
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 os.environ["TORCHDYNAMO_DISABLE"] = "1"
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -38,7 +39,7 @@ app = FastAPI(title="Sakhi API", version="1.0.0")
 # CORS for React dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -177,6 +178,130 @@ async def process_audio(
         )
     finally:
         os.unlink(tmp_path)
+
+
+def _sse_event(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+@app.post("/api/process-text-stream")
+async def process_text_stream(req: TextRequest):
+    def generate():
+        t_total = time.time()
+        transcript = req.transcript.strip()
+        if not transcript:
+            yield _sse_event({"error": "Empty transcript"})
+            return
+
+        # Detect visit type
+        yield _sse_event({"stage": "detect", "status": "running"})
+        if req.visit_type and req.visit_type != "auto":
+            visit_type = req.visit_type.lower().replace(" ", "_")
+        else:
+            visit_type = detect_visit_type(transcript)
+        yield _sse_event({"stage": "detect", "status": "done", "visit_type": visit_type})
+
+        # Form extraction
+        yield _sse_event({"stage": "form", "status": "running"})
+        t0 = time.time()
+        form_result = extract_form(transcript, visit_type)
+        form_time = time.time() - t0
+        yield _sse_event({"stage": "form", "status": "done", "time": round(form_time, 1)})
+
+        # Danger sign detection
+        yield _sse_event({"stage": "danger", "status": "running"})
+        t1 = time.time()
+        danger_result = extract_danger_signs(transcript, visit_type)
+        danger_time = time.time() - t1
+        yield _sse_event({"stage": "danger", "status": "done", "time": round(danger_time, 1)})
+
+        total = time.time() - t_total
+        yield _sse_event({
+            "stage": "complete",
+            "visit_type": visit_type,
+            "form": form_result.get("parsed"),
+            "danger": danger_result.get("parsed"),
+            "timing": {
+                "form_s": round(form_time, 1),
+                "danger_s": round(danger_time, 1),
+                "total_s": round(total, 1),
+            },
+        })
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/api/process-audio-stream")
+async def process_audio_stream(
+    audio: UploadFile = File(...),
+    visit_type: str = Form("auto"),
+):
+    # Save uploaded audio to temp file before streaming
+    suffix = os.path.splitext(audio.filename or "audio.wav")[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    def generate():
+        t_total = time.time()
+        try:
+            # ASR
+            yield _sse_event({"stage": "asr", "status": "running"})
+            t0 = time.time()
+            transcript = transcribe_audio(tmp_path)
+            asr_time = time.time() - t0
+            yield _sse_event({"stage": "asr", "status": "done", "time": round(asr_time, 1)})
+
+            if not transcript or not transcript.strip():
+                yield _sse_event({"error": "Transcription returned empty"})
+                return
+
+            # Normalize
+            yield _sse_event({"stage": "normalize", "status": "running"})
+            transcript = postprocess_transcript(transcript)
+            yield _sse_event({"stage": "normalize", "status": "done", "transcript": transcript})
+
+            # Detect visit type
+            yield _sse_event({"stage": "detect", "status": "running"})
+            if visit_type and visit_type != "auto":
+                vtype = visit_type.lower().replace(" ", "_")
+            else:
+                vtype = detect_visit_type(transcript)
+            yield _sse_event({"stage": "detect", "status": "done", "visit_type": vtype})
+
+            # Form extraction
+            yield _sse_event({"stage": "form", "status": "running"})
+            t1 = time.time()
+            form_result = extract_form(transcript, vtype)
+            form_time = time.time() - t1
+            yield _sse_event({"stage": "form", "status": "done", "time": round(form_time, 1)})
+
+            # Danger sign detection
+            yield _sse_event({"stage": "danger", "status": "running"})
+            t2 = time.time()
+            danger_result = extract_danger_signs(transcript, vtype)
+            danger_time = time.time() - t2
+            yield _sse_event({"stage": "danger", "status": "done", "time": round(danger_time, 1)})
+
+            total = time.time() - t_total
+            yield _sse_event({
+                "stage": "complete",
+                "visit_type": vtype,
+                "form": form_result.get("parsed"),
+                "danger": danger_result.get("parsed"),
+                "transcript": transcript,
+                "timing": {
+                    "asr_s": round(asr_time, 1),
+                    "form_s": round(form_time, 1),
+                    "danger_s": round(danger_time, 1),
+                    "total_s": round(total, 1),
+                },
+            })
+        finally:
+            os.unlink(tmp_path)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":
