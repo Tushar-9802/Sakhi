@@ -3,7 +3,7 @@
 Offline-first tool that converts Hindi home visit conversations into structured government health forms and real-time referral decisions for India's 1 million+ ASHA health workers.
 
 **Competition:** [Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon) ($200K prize pool)
-**Tracks:** Health & Sciences (primary), Digital Equity (secondary), Ollama deployment
+**Track:** Health & Sciences | Ollama deployment
 
 ## Problem
 
@@ -11,20 +11,34 @@ India's ASHA workers conduct 50M+ maternal/child health home visits per year acr
 
 ## Solution
 
-Phone records the conversation → Whisper transcribes Hindi audio → Hindi normalization → Gemma 4 extracts structured form data + detects danger signs with evidence → Referral decision issued immediately.
+Phone records the conversation → Whisper transcribes Hindi audio → Hindi normalization → Gemma 4 extracts structured form data, flags danger signs with evidence, and issues referral decisions — all through a single function calling invocation.
 
 No internet required. No cloud dependency. No physician needed at point of care.
 
 ```
-[Hindi Audio] → Whisper ASR → Hindi Normalization → Gemma 4 E4B
-                                                      ├── MCTS form (JSON)
-                                                      ├── Danger sign flags + utterance evidence
-                                                      └── Referral decision (immediate / 24h / routine)
+[Hindi Audio] → Whisper ASR → Hindi Normalization → Gemma 4 E4B (function calling)
+                                                      ├── extract_form()      → structured MCTS JSON
+                                                      ├── flag_danger_sign()  → per-sign with utterance evidence
+                                                      └── issue_referral()    → urgency + facility + reasoning
 ```
 
 ### Why two models, not one?
 
-Gemma 4's audio capability is multimodal *understanding*, not transcription. It interprets and responds to audio content. Whisper is a discriminative ASR model trained specifically for speech-to-text — delivering 5% WER on Hindi medical vocabulary and handling Hindi-English code-switching that ASHA conversations naturally contain. Conflating transcription and clinical reasoning into one model sacrifices accuracy on both tasks. The two-stage design is intentional: Whisper handles acoustics, Gemma 4 handles clinical reasoning and structured extraction.
+Gemma 4's audio capability is multimodal *understanding*, not transcription. Whisper is a discriminative ASR model trained specifically for speech-to-text — delivering 5% WER on Hindi medical vocabulary and handling Hindi-English code-switching that ASHA conversations naturally contain. The two-stage design is intentional: Whisper handles acoustics, Gemma 4 handles clinical reasoning via native function calling.
+
+## Function Calling
+
+The pipeline uses Gemma 4's native function calling through Ollama's `tools=` parameter. A single LLM call invokes up to three tools:
+
+| Tool | Purpose | When called |
+|------|---------|-------------|
+| `extract_form` | Fill visit-specific MCTS/HMIS schema with structured data | Every conversation |
+| `flag_danger_sign` | Flag one NHM-defined danger sign with verbatim utterance evidence | Only when danger signs are present |
+| `issue_referral` | Referral decision with urgency, facility level, and clinical reasoning | Only when danger signs warrant referral |
+
+On a normal visit, only `extract_form` is called. On a high-risk visit (e.g., preeclampsia), the model calls all three — `extract_form` + multiple `flag_danger_sign` calls + `issue_referral` — in a single inference pass.
+
+The pipeline uses a hybrid design: form extraction via `format="json"` (proven precision on structured schemas) and danger sign detection via native function calling. The model *decides* whether to flag danger signs and issue referrals — tool calls surface in the API response as `tool_calls` metadata.
 
 ## Architecture
 
@@ -32,7 +46,7 @@ Gemma 4's audio capability is multimodal *understanding*, not transcription. It 
 |-----------|-------|------|------|
 | ASR | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 |
 | Normalization | src/hindi_normalize.py | — | Hindi number words → digits, medical term mapping |
-| Clinical Extraction | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Transcript → structured JSON form + danger signs |
+| Clinical Extraction | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral |
 
 **Hindi number normalization:** Algorithmic parser covering all 0–999 Hindi number words with Whisper misspelling variants. Handles compound medical values: "एक सौ दस बटा सत्तर" → "110/70", "ग्यारह दशमलव पाँच" → "11.5", "तीन किलो दो सौ ग्राम" → "3.2 kg".
 
@@ -43,6 +57,20 @@ Gemma 4's audio capability is multimodal *understanding*, not transcription. It 
 4. Transcript grounding — evidence must appear verbatim in the transcript
 5. Deduplication across overlapping danger signs
 6. Form validation — strips invented names (दीदी/बहन patterns), default ages, phantom lab results; range checks on BP (60–250/30–150), Hb (3–20), weight (1–200), gestational weeks (1–45)
+
+## Safety & Limitations
+
+Sakhi is a decision-support tool, not a diagnostic system. All outputs require human review.
+
+**What it catches:** Danger signs with explicit conversational evidence — elevated BP with symptoms, severe bleeding, neonatal distress indicators. The model only flags what was said in the conversation, grounded by verbatim utterance quotes.
+
+**What it can miss:** Danger signs not discussed in conversation, subtle clinical findings that require physical examination, conditions that present atypically. The system cannot observe — it can only reason about what was spoken.
+
+**False positive controls:** The 6-layer anti-hallucination pipeline aggressively filters ungrounded danger signs. On the test suite, normal visits produce zero false alarms.
+
+**Human-in-the-loop:** Every referral decision is presented to the ANM/medical officer at the health center for review before action. The tool accelerates information flow from field to facility — it does not replace clinical judgment.
+
+**Known gaps:** All current test data is synthetic (TTS-generated Hindi audio, LLM-generated training conversations). Real-world ASHA conversations will be noisier, more fragmented, and contain regional dialect variation not yet tested.
 
 ## Deployment Model
 
@@ -82,7 +110,7 @@ Health Center (laptop, RTX GPU)         Field (any smartphone)
 - 15 synthetic Hindi audio samples through full pipeline
 - 2 failures are TTS→ASR artifacts on BP values (synthetic audio, not real-world)
 - All visit types pass, all danger sign tests pass, all edge cases pass
-- Avg timing: ASR 3.4s | Form 15.5s | Danger 9.6s | **Total 28.6s**
+- Avg pipeline timing: ~15s per conversation (RTX 5070 Ti, warm Ollama, hybrid json+FC)
 
 **Hindi normalization:** 133 tests pass (test_asr.py)
 - Covers 0–999 Hindi number words + Whisper misspelling variants
@@ -125,8 +153,8 @@ python scripts/test_asr.py               # Hindi normalization (133/133)
 ## Project Structure
 
 ```
-api.py                              # FastAPI backend — 6 endpoints, SSE streaming
-app.py                              # Core pipeline — ASR, extraction, danger signs, validation
+api.py                              # FastAPI backend — SSE streaming, tool_calls metadata
+app.py                              # Core pipeline — function calling, ASR, extraction, validation
 src/hindi_normalize.py              # Hindi number/medical term normalization (160 number words)
 configs/schemas/                    # 5 JSON schemas (ANC, PNC, delivery, child health, danger signs)
 frontend/
@@ -138,6 +166,7 @@ scripts/
   test_ollama_quality.py            # Text extraction quality tests (14/15)
   test_pipeline_e2e.py              # End-to-end audio pipeline tests (13/15)
   test_asr.py                       # ASR + Hindi normalization tests (133/133)
+  test_function_calling.py          # Gemma 4 function calling validation
   generate_training_data.py         # Synthetic ASHA conversation generation
   train_unsloth.py                  # LoRA fine-tuning via Unsloth
   export_ollama.py                  # GGUF → Ollama model export

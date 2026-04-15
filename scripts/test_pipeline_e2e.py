@@ -27,8 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import (
     transcribe_audio,
-    extract_form,
-    extract_danger_signs,
+    extract_all,
     detect_visit_type,
     init_schemas,
 )
@@ -96,11 +95,16 @@ def run_test(test_case, test_num, total):
     # Use expected type for extraction (test extraction quality, not detection)
     visit_type = expected_type
 
-    # ── Step 3: Form extraction ──
+    # ── Step 3: Unified extraction (function calling) ──
     t0 = time.time()
-    form_result = extract_form(transcript, visit_type)
-    timing["form"] = round(time.time() - t0, 1)
-    form = form_result.get("parsed")
+    result = extract_all(transcript, visit_type)
+    extract_time = round(time.time() - t0, 1)
+    timing["form"] = extract_time
+    timing["danger"] = 0.0  # included in single call
+
+    form = result.get("form")
+    danger = result.get("danger")
+    n_tool_calls = len(result.get("tool_calls") or [])
 
     if form is None:
         issues.append("FORM_PARSE_FAIL")
@@ -118,12 +122,6 @@ def run_test(test_case, test_num, total):
             val = get_nested(form, path)
             if val is not None and str(val).lower() not in ("null", "none", "", "—"):
                 issues.append(f"HALLUC {path}={val}")
-
-    # ── Step 4: Danger sign detection ──
-    t0 = time.time()
-    danger_result = extract_danger_signs(transcript, visit_type)
-    timing["danger"] = round(time.time() - t0, 1)
-    danger = danger_result.get("parsed")
 
     if danger is None:
         issues.append("DANGER_PARSE_FAIL")
@@ -150,7 +148,8 @@ def run_test(test_case, test_num, total):
     passed = len(issues) == 0
     status = "PASS" if passed else "FAIL"
     detail = "all checks OK" if passed else "; ".join(issues)
-    print(f"  [{test_num}/{total}] {status} [{name}] ({timing['total']:.1f}s) {detail}")
+    tc_info = f"tools={n_tool_calls}" if n_tool_calls else "no-fc"
+    print(f"  [{test_num}/{total}] {status} [{name}] ({timing['total']:.1f}s, {tc_info}) {detail}")
 
     return passed, issues, timing
 
@@ -189,12 +188,11 @@ def main():
     pct = total_pass / total * 100 if total else 0
     avg_total = sum(t.get("total", 0) for t in all_timings) / len(all_timings)
     avg_asr = sum(t.get("asr", 0) for t in all_timings) / len(all_timings)
-    avg_form = sum(t.get("form", 0) for t in all_timings) / len(all_timings)
-    avg_danger = sum(t.get("danger", 0) for t in all_timings) / len(all_timings)
+    avg_extract = sum(t.get("form", 0) for t in all_timings) / len(all_timings)
 
     print(f"\n{'=' * 74}")
     print(f" RESULTS: {total_pass}/{total} ({pct:.0f}%)")
-    print(f" Avg timing: ASR {avg_asr:.1f}s | Form {avg_form:.1f}s | Danger {avg_danger:.1f}s | Total {avg_total:.1f}s")
+    print(f" Avg timing: ASR {avg_asr:.1f}s | Extract {avg_extract:.1f}s | Total {avg_total:.1f}s")
     print(f"{'=' * 74}")
 
     if failures:

@@ -28,6 +28,7 @@ from app import (
     transcribe_audio,
     extract_form,
     extract_danger_signs,
+    extract_all,
     detect_visit_type,
     init_schemas,
     validate_form_output,
@@ -62,6 +63,7 @@ class ExtractionResult(BaseModel):
     danger: Optional[dict] = None
     transcript: Optional[str] = None
     timing: dict = {}
+    tool_calls: Optional[list] = None
     error: Optional[str] = None
 
 
@@ -95,27 +97,19 @@ def process_text(req: TextRequest):
     else:
         visit_type = detect_visit_type(transcript)
 
-    # Form extraction
-    t0 = time.time()
-    form_result = extract_form(transcript, visit_type)
-    form_time = time.time() - t0
-
-    # Danger sign detection
-    t1 = time.time()
-    danger_result = extract_danger_signs(transcript, visit_type)
-    danger_time = time.time() - t1
+    # Unified extraction (function calling if enabled, else separate calls)
+    result = extract_all(transcript, visit_type)
 
     total = time.time() - t_total
+    timing = result.get("timing", {})
+    timing["total_s"] = round(total, 1)
 
     return ExtractionResult(
         visit_type=visit_type,
-        form=form_result.get("parsed"),
-        danger=danger_result.get("parsed"),
-        timing={
-            "form_s": round(form_time, 1),
-            "danger_s": round(danger_time, 1),
-            "total_s": round(total, 1),
-        },
+        form=result["form"],
+        danger=result["danger"],
+        timing=timing,
+        tool_calls=result.get("tool_calls"),
     )
 
 
@@ -152,29 +146,21 @@ async def process_audio(
         else:
             vtype = detect_visit_type(transcript)
 
-        # Form extraction
-        t1 = time.time()
-        form_result = extract_form(transcript, vtype)
-        form_time = time.time() - t1
-
-        # Danger sign detection
-        t2 = time.time()
-        danger_result = extract_danger_signs(transcript, vtype)
-        danger_time = time.time() - t2
+        # Unified extraction
+        result = extract_all(transcript, vtype)
 
         total = time.time() - t_total
+        timing = result.get("timing", {})
+        timing["asr_s"] = round(asr_time, 1)
+        timing["total_s"] = round(total, 1)
 
         return ExtractionResult(
             visit_type=vtype,
-            form=form_result.get("parsed"),
-            danger=danger_result.get("parsed"),
+            form=result["form"],
+            danger=result["danger"],
             transcript=transcript,
-            timing={
-                "asr_s": round(asr_time, 1),
-                "form_s": round(form_time, 1),
-                "danger_s": round(danger_time, 1),
-                "total_s": round(total, 1),
-            },
+            timing=timing,
+            tool_calls=result.get("tool_calls"),
         )
     finally:
         os.unlink(tmp_path)
@@ -201,31 +187,26 @@ async def process_text_stream(req: TextRequest):
             visit_type = detect_visit_type(transcript)
         yield _sse_event({"stage": "detect", "status": "done", "visit_type": visit_type})
 
-        # Form extraction
+        # Unified extraction (form + danger in one LLM call via function calling)
         yield _sse_event({"stage": "form", "status": "running"})
         t0 = time.time()
-        form_result = extract_form(transcript, visit_type)
-        form_time = time.time() - t0
-        yield _sse_event({"stage": "form", "status": "done", "time": round(form_time, 1)})
+        result = extract_all(transcript, visit_type)
+        extract_time = time.time() - t0
+        yield _sse_event({"stage": "form", "status": "done", "time": round(extract_time, 1)})
 
-        # Danger sign detection
-        yield _sse_event({"stage": "danger", "status": "running"})
-        t1 = time.time()
-        danger_result = extract_danger_signs(transcript, visit_type)
-        danger_time = time.time() - t1
-        yield _sse_event({"stage": "danger", "status": "done", "time": round(danger_time, 1)})
+        # Danger stage is instant (already done in same call)
+        yield _sse_event({"stage": "danger", "status": "done", "time": 0.0})
 
         total = time.time() - t_total
+        timing = result.get("timing", {})
+        timing["total_s"] = round(total, 1)
         yield _sse_event({
             "stage": "complete",
             "visit_type": visit_type,
-            "form": form_result.get("parsed"),
-            "danger": danger_result.get("parsed"),
-            "timing": {
-                "form_s": round(form_time, 1),
-                "danger_s": round(danger_time, 1),
-                "total_s": round(total, 1),
-            },
+            "form": result["form"],
+            "danger": result["danger"],
+            "tool_calls": result.get("tool_calls"),
+            "timing": timing,
         })
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -270,33 +251,28 @@ async def process_audio_stream(
                 vtype = detect_visit_type(transcript)
             yield _sse_event({"stage": "detect", "status": "done", "visit_type": vtype})
 
-            # Form extraction
+            # Unified extraction (form + danger in one LLM call via function calling)
             yield _sse_event({"stage": "form", "status": "running"})
             t1 = time.time()
-            form_result = extract_form(transcript, vtype)
-            form_time = time.time() - t1
-            yield _sse_event({"stage": "form", "status": "done", "time": round(form_time, 1)})
+            result = extract_all(transcript, vtype)
+            extract_time = time.time() - t1
+            yield _sse_event({"stage": "form", "status": "done", "time": round(extract_time, 1)})
 
-            # Danger sign detection
-            yield _sse_event({"stage": "danger", "status": "running"})
-            t2 = time.time()
-            danger_result = extract_danger_signs(transcript, vtype)
-            danger_time = time.time() - t2
-            yield _sse_event({"stage": "danger", "status": "done", "time": round(danger_time, 1)})
+            # Danger stage is instant (already done in same call)
+            yield _sse_event({"stage": "danger", "status": "done", "time": 0.0})
 
             total = time.time() - t_total
+            timing = result.get("timing", {})
+            timing["asr_s"] = round(asr_time, 1)
+            timing["total_s"] = round(total, 1)
             yield _sse_event({
                 "stage": "complete",
                 "visit_type": vtype,
-                "form": form_result.get("parsed"),
-                "danger": danger_result.get("parsed"),
+                "form": result["form"],
+                "danger": result["danger"],
                 "transcript": transcript,
-                "timing": {
-                    "asr_s": round(asr_time, 1),
-                    "form_s": round(form_time, 1),
-                    "danger_s": round(danger_time, 1),
-                    "total_s": round(total, 1),
-                },
+                "tool_calls": result.get("tool_calls"),
+                "timing": timing,
             })
         finally:
             os.unlink(tmp_path)

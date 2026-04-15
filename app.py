@@ -32,6 +32,7 @@ MAX_SEQ_LENGTH = 4096
 # Use "sakhi" once fine-tuned GGUF is registered, or base model for now
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b-it-q4_K_M")
 USE_OLLAMA = os.environ.get("USE_OLLAMA", "1") == "1"
+USE_FUNCTION_CALLING = os.environ.get("USE_FUNCTION_CALLING", "1") == "1"
 
 # System prompts (same as training)
 FORM_SYSTEM_PROMPT = (
@@ -255,6 +256,317 @@ def _run_inference_ollama(system_prompt, user_prompt):
         print(f"[WARN] Ollama JSON mode parse failed, falling back to heuristic parser")
         parsed = _parse_json_response(response)
     return {"raw": response, "parsed": parsed, "time_s": elapsed}
+
+
+# ============================================================
+# FUNCTION CALLING — Gemma 4 native tool use
+# ============================================================
+
+def _build_form_tool(visit_type):
+    """Build extract_form tool definition from the visit's JSON schema."""
+    schema_key = VISIT_TYPE_MAP.get(visit_type, "anc_visit")
+    schema = SCHEMAS.get(schema_key, SCHEMAS["anc_visit"])
+    return {
+        "type": "function",
+        "function": {
+            "name": "extract_form",
+            "description": (
+                f"Extract structured {schema_key.replace('_', ' ')} form data from the "
+                "ASHA home visit conversation. ONLY extract information explicitly stated. "
+                "Use null for any field not mentioned."
+            ),
+            "parameters": schema,
+        },
+    }
+
+
+TOOL_FLAG_DANGER_SIGN = {
+    "type": "function",
+    "function": {
+        "name": "flag_danger_sign",
+        "description": (
+            "Flag a single danger sign detected in the patient conversation. "
+            "Call once per danger sign found. Do NOT call if no danger signs exist. "
+            "The evidence field MUST be an exact verbatim quote from the conversation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sign": {
+                    "type": "string",
+                    "description": "Standard NHM danger sign name (e.g., severe_preeclampsia, severe_anemia)",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["immediate_referral", "urgent_care", "monitor_closely"],
+                },
+                "clinical_value": {
+                    "type": ["string", "null"],
+                    "description": "Measured value if applicable (e.g., '145/95', '38.5C')",
+                },
+                "utterance_evidence": {
+                    "type": "string",
+                    "description": "REQUIRED: exact verbatim quote from conversation proving this sign",
+                },
+            },
+            "required": ["sign", "category", "utterance_evidence"],
+        },
+    },
+}
+
+TOOL_ISSUE_REFERRAL = {
+    "type": "function",
+    "function": {
+        "name": "issue_referral",
+        "description": (
+            "Issue a referral decision based on detected danger signs. "
+            "Only call if danger signs warrant referral. Do NOT call for routine visits."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "urgency": {
+                    "type": "string",
+                    "enum": ["immediate", "within_24h", "routine"],
+                },
+                "facility": {
+                    "type": ["string", "null"],
+                    "enum": ["PHC", "CHC", "district_hospital", "FRU", None],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief clinical reasoning for referral",
+                },
+            },
+            "required": ["urgency", "facility", "reason"],
+        },
+    },
+}
+
+DANGER_FC_SYSTEM_PROMPT = (
+    "You are a clinical danger sign detection system for India's ASHA health worker program.\n\n"
+    "Analyze the conversation and use the provided tools:\n"
+    "1. flag_danger_sign — call ONCE per danger sign found. Evidence MUST be a verbatim quote from the conversation. "
+    "If NO danger signs exist, do NOT call any tool.\n"
+    "2. issue_referral — call only if danger signs warrant referral to a facility.\n\n"
+    "STRICT RULES:\n"
+    "- ONLY flag a danger sign if the EXACT words proving it appear in the conversation.\n"
+    "- utterance_evidence MUST be a verbatim copy-paste from the conversation — do NOT paraphrase.\n"
+    "- If a vital sign is NORMAL (e.g., BP 110/70, temperature 37°C), that is NOT a danger sign.\n"
+    "- Most routine visits have ZERO danger signs. Do NOT call any tools for normal visits.\n"
+    "- When in doubt, do NOT flag — a missed flag is better than a false alarm."
+)
+
+
+def _run_danger_fc(transcript, visit_type):
+    """Run danger sign detection via function calling (flag_danger_sign + issue_referral tools)."""
+    import ollama
+
+    tools = [TOOL_FLAG_DANGER_SIGN, TOOL_ISSUE_REFERRAL]
+
+    t0 = time.time()
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": DANGER_FC_SYSTEM_PROMPT},
+            {"role": "user", "content": (
+                f"Analyze this ASHA home visit conversation for danger signs.\n\n"
+                f"Visit type: {visit_type}\n\n"
+                f"{transcript}"
+            )},
+        ],
+        tools=tools,
+        options={"temperature": 0.1, "num_ctx": 4096, "num_gpu": 999},
+        keep_alive="10m",
+    )
+    elapsed = time.time() - t0
+
+    tok_s = resp.eval_count / (resp.eval_duration / 1e9) if resp.eval_duration else 0
+    print(f"[LLM] Danger FC: {elapsed:.1f}s ({resp.eval_count} tok, {tok_s:.0f} tok/s)")
+
+    danger_signs = []
+    referral = None
+    tool_calls_raw = []
+
+    if resp.message.tool_calls:
+        for tc in resp.message.tool_calls:
+            fname = tc.function.name
+            args = tc.function.arguments
+            tool_calls_raw.append({"function": fname, "arguments": args})
+
+            if fname == "flag_danger_sign":
+                danger_signs.append(args)
+            elif fname == "issue_referral":
+                referral = args
+
+        print(f"[LLM] Tool calls: {len(resp.message.tool_calls)} "
+              f"(danger_signs={len(danger_signs)}, "
+              f"referral={'yes' if referral else 'no'})")
+    else:
+        print(f"[LLM] No tool calls — no danger signs detected")
+
+    return {
+        "danger_signs": danger_signs,
+        "referral": referral,
+        "tool_calls": tool_calls_raw,
+        "time_s": elapsed,
+    }
+
+
+def _normalize_fc_form(raw, visit_type):
+    """Normalize function calling form output to match the expected schema structure.
+
+    The model sometimes uses free-form keys (blood_pressure: "110/70") instead
+    of schema keys (bp_systolic: 110, bp_diastolic: 70), or nests data
+    differently. This flattens and remaps to the canonical form.
+    """
+    if not raw or not isinstance(raw, dict):
+        return raw
+
+    # Recursively collect all key-value pairs from the raw output
+    def _collect(d, prefix=""):
+        items = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                key = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, dict):
+                    items.update(_collect(v, key))
+                else:
+                    items[key] = v
+                    # Also store under the leaf key for simple matching
+                    items[k] = v
+        return items
+
+    flat = _collect(raw)
+
+    # Build a clean output matching schema structure
+    schema_key = VISIT_TYPE_MAP.get(visit_type, "anc_visit")
+    schema = SCHEMAS.get(schema_key, SCHEMAS.get("anc_visit", {}))
+    result = {}
+
+    # Walk schema top-level sections and fill from flat values
+    for section_name, section_def in schema.get("properties", {}).items():
+        if section_def.get("type") == "object":
+            section_data = {}
+            for field_name in section_def.get("properties", {}).keys():
+                # Try exact match first, then look through flat keys
+                val = flat.get(f"{section_name}.{field_name}") or flat.get(field_name)
+                if val is not None:
+                    section_data[field_name] = val
+            if section_data:
+                result[section_name] = section_data
+        elif section_def.get("type") == "array":
+            val = flat.get(section_name)
+            if isinstance(val, list):
+                result[section_name] = val
+            else:
+                result[section_name] = []
+        else:
+            val = flat.get(section_name)
+            if val is not None:
+                result[section_name] = val
+
+    # ── BP splitting: "110/70" → bp_systolic=110, bp_diastolic=70 ──
+    vitals = result.get("vitals", {})
+    bp_raw = flat.get("blood_pressure") or flat.get("bp") or flat.get("vitals.blood_pressure")
+    if bp_raw and isinstance(bp_raw, str) and "/" in bp_raw:
+        parts = bp_raw.split("/")
+        try:
+            if "bp_systolic" not in vitals or vitals.get("bp_systolic") is None:
+                vitals["bp_systolic"] = int(parts[0].strip())
+            if "bp_diastolic" not in vitals or vitals.get("bp_diastolic") is None:
+                vitals["bp_diastolic"] = int(parts[1].strip())
+        except (ValueError, IndexError):
+            pass
+
+    # ── Infant/child weight normalization (before vitals, to avoid misplacement) ──
+    # PNC: infant_assessment.weight_kg, Delivery: infant.birth_weight_kg
+    for iw_section, iw_field, iw_keys in [
+        ("infant_assessment", "weight_kg", [
+            "infant_assessment.weight_kg", "infant_assessment.weight",
+        ]),
+        ("infant", "birth_weight_kg", [
+            "infant.birth_weight_kg", "infant.birth_weight", "infant.weight",
+        ]),
+        ("child", "weight_kg", [
+            "child.weight_kg", "child.weight",
+        ]),
+        ("growth_assessment", "weight_kg", [
+            "growth_assessment.weight_kg", "growth_assessment.weight",
+        ]),
+    ]:
+        for iw_key in iw_keys:
+            iw_val = flat.get(iw_key)
+            if iw_val is not None:
+                section = result.get(iw_section, {})
+                if isinstance(section, dict) and (iw_field not in section or section.get(iw_field) is None):
+                    try:
+                        num = float(str(iw_val).replace("kg", "").replace("KG", "").strip())
+                        section[iw_field] = num
+                        result[iw_section] = section
+                    except (ValueError, TypeError):
+                        pass
+                break
+
+    # ── Vitals weight normalization: "55 kg" → 55.0 ──
+    # Only use vitals-specific keys to avoid grabbing infant weight
+    for wkey in ("vitals.weight", "vitals.weight_kg"):
+        wval = flat.get(wkey)
+        if wval is not None:
+            try:
+                num = float(str(wval).replace("kg", "").replace("KG", "").strip())
+                if "weight_kg" not in vitals or vitals.get("weight_kg") is None:
+                    vitals["weight_kg"] = num
+            except (ValueError, TypeError):
+                pass
+            break
+
+    # ── Hemoglobin normalization ──
+    for hkey in ("hemoglobin", "hemoglobin_gm_percent", "hb", "lab_results.hemoglobin"):
+        hval = flat.get(hkey)
+        if hval is not None:
+            try:
+                num = float(str(hval).replace("g/dl", "").replace("gm", "").strip())
+                if "hemoglobin_gm_percent" not in vitals or vitals.get("hemoglobin_gm_percent") is None:
+                    vitals["hemoglobin_gm_percent"] = num
+            except (ValueError, TypeError):
+                pass
+            break
+
+    if vitals:
+        result["vitals"] = vitals
+
+    # ── Gestational weeks normalization ──
+    pregnancy = result.get("pregnancy", {})
+    if "gestational_weeks" not in pregnancy or pregnancy.get("gestational_weeks") is None:
+        for gkey in ("gestational_weeks", "gestational_age", "pregnancy.gestational_age",
+                      "pregnancy.gestational_weeks", "gestation_weeks"):
+            gval = flat.get(gkey)
+            if gval is not None:
+                try:
+                    num = int(re.search(r'(\d+)', str(gval)).group(1))
+                    pregnancy["gestational_weeks"] = num
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                break
+    if pregnancy:
+        result["pregnancy"] = pregnancy
+
+    # ── Child age normalization ──
+    for akey in ("age_months", "child.age_months", "age"):
+        aval = flat.get(akey)
+        if aval is not None:
+            child = result.get("child", {})
+            if isinstance(child, dict) and ("age_months" not in child or child.get("age_months") is None):
+                try:
+                    num = int(re.search(r'(\d+)', str(aval)).group(1))
+                    child["age_months"] = num
+                    result["child"] = child
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            break
+
+    return result
 
 
 def _run_inference_unsloth(system_prompt, user_prompt):
@@ -648,6 +960,162 @@ def extract_danger_signs(transcript, visit_type):
         result["parsed"]["newborn_danger_signs_checklist"] = newborn_ck
 
     return result
+
+
+def _validate_fc_danger_signs(danger_signs, transcript):
+    """Post-validate danger signs from function calling — same logic as extract_danger_signs."""
+    GENERIC_PHRASES = [
+        "कोई तकलीफ़ हो तो फ़ोन कर दीजिए",
+        "कोई तकलीफ हो तो फोन कर दीजिए",
+        "कोई समस्या हो तो तुरंत बताइए",
+        "कोई समस्या हो तो फोन करें",
+        "कोई दिक्कत हो तो",
+        "अगली बार आऊँगी",
+        "अगली विज़िट",
+        "ठीक है दीदी, धन्यवाद",
+        "ठीक है दीदी",
+    ]
+    NORMAL_INDICATORS = [
+        "110/70", "120/80", "110/80", "118/76", "108/72",
+        "बिल्कुल ठीक", "सामान्य", "नॉर्मल", "अच्छा है", "ठीक है",
+        "बिल्कुल सामान्य",
+    ]
+
+    validated = []
+    norm_transcript = re.sub(r'\s+', ' ', transcript.strip())
+
+    for sign in danger_signs:
+        evidence = sign.get("utterance_evidence") or sign.get("evidence", "")
+        if not evidence or len(evidence) < 10:
+            print(f"[DEBUG] FC dropped sign '{sign.get('sign','')}': evidence too short")
+            continue
+
+        norm_evidence = re.sub(r'\s+', ' ', evidence.strip())
+
+        if any(phrase in norm_evidence for phrase in GENERIC_PHRASES):
+            print(f"[DEBUG] FC dropped sign '{sign.get('sign','')}': generic phrase")
+            continue
+        if any(indicator in norm_evidence for indicator in NORMAL_INDICATORS):
+            print(f"[DEBUG] FC dropped sign '{sign.get('sign','')}': normal vital")
+            continue
+
+        # Check evidence exists in transcript
+        found = False
+        if norm_evidence in norm_transcript:
+            found = True
+        elif len(norm_evidence) >= 20:
+            min_chunk = min(30, len(norm_evidence))
+            for i in range(0, len(norm_evidence) - min_chunk + 1):
+                if norm_evidence[i:i + min_chunk] in norm_transcript:
+                    found = True
+                    break
+
+        if found:
+            validated.append(sign)
+        else:
+            print(f"[DEBUG] FC dropped sign '{sign.get('sign','')}': evidence not in transcript")
+
+    # Same-evidence dedup
+    if len(validated) > 1:
+        evidences = set((s.get("utterance_evidence") or s.get("evidence", "")).strip() for s in validated)
+        if len(evidences) == 1:
+            print(f"[DEBUG] FC dropped all {len(validated)} signs: same evidence")
+            validated = []
+
+    dropped = len(danger_signs) - len(validated)
+    if dropped:
+        print(f"[DEBUG] FC post-validation dropped {dropped}/{len(danger_signs)} danger signs")
+    return validated
+
+
+def extract_all(transcript, visit_type):
+    """Hybrid extraction: format="json" for form (precise), function calling for danger+referral.
+    Falls back to two format="json" calls if function calling is off."""
+    if not (USE_OLLAMA and USE_FUNCTION_CALLING):
+        # Fallback: two separate json-mode calls
+        form_result = extract_form(transcript, visit_type)
+        danger_result = extract_danger_signs(transcript, visit_type)
+        return {
+            "form": form_result.get("parsed"),
+            "danger": danger_result.get("parsed"),
+            "tool_calls": [],
+            "timing": {
+                "form_s": round(form_result.get("time_s", 0), 1),
+                "danger_s": round(danger_result.get("time_s", 0), 1),
+            },
+        }
+
+    # ── Step 1: Form extraction via format="json" (proven precision) ──
+    t0 = time.time()
+    form_result = extract_form(transcript, visit_type)
+    form_time = time.time() - t0
+    form_data = form_result.get("parsed")
+
+    # ── Step 2: Danger signs + referral via function calling ──
+    fc_result = _run_danger_fc(transcript, visit_type)
+
+    # Post-process danger signs
+    raw_signs = fc_result["danger_signs"]
+    validated_signs = _validate_fc_danger_signs(raw_signs, transcript)
+
+    # Build referral decision
+    referral_raw = fc_result["referral"]
+    if validated_signs:
+        urgency_map = {
+            "immediate": "refer_immediately",
+            "within_24h": "refer_within_24h",
+            "routine": "continue_monitoring",
+        }
+        if referral_raw:
+            referral_decision = {
+                "decision": urgency_map.get(referral_raw.get("urgency"), "continue_monitoring"),
+                "reason": referral_raw.get("reason", ""),
+                "evidence_utterances": [s.get("utterance_evidence") or s.get("evidence", "") for s in validated_signs],
+                "recommended_facility": referral_raw.get("facility"),
+            }
+        else:
+            referral_decision = {
+                "decision": "continue_monitoring",
+                "reason": "Danger signs detected but no explicit referral issued",
+                "evidence_utterances": [s.get("utterance_evidence") or s.get("evidence", "") for s in validated_signs],
+            }
+    else:
+        referral_decision = {
+            "decision": "routine_followup",
+            "reason": "No danger signs detected in conversation",
+            "evidence_utterances": [],
+        }
+
+    # Normalize danger sign format to match existing schema
+    normalized_signs = []
+    for s in validated_signs:
+        normalized_signs.append({
+            "sign": s.get("sign", ""),
+            "category": s.get("category", "monitor_closely"),
+            "clinical_value": s.get("clinical_value"),
+            "utterance_evidence": s.get("utterance_evidence") or s.get("evidence", ""),
+        })
+
+    # Derive checklists
+    maternal_ck, newborn_ck = derive_checklists(normalized_signs, visit_type)
+
+    danger_data = {
+        "visit_type": visit_type,
+        "danger_signs": normalized_signs,
+        "referral_decision": referral_decision,
+        "maternal_danger_signs_checklist": maternal_ck,
+        "newborn_danger_signs_checklist": newborn_ck,
+    }
+
+    return {
+        "form": form_data,
+        "danger": danger_data,
+        "tool_calls": fc_result["tool_calls"],
+        "timing": {
+            "form_s": round(form_time, 1),
+            "danger_s": round(fc_result["time_s"], 1),
+        },
+    }
 
 
 # ============================================================
