@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { saveRecording, getQueue, getRecording, removeRecording, clearQueue, updateRecordingStatus } from './offlineQueue'
+import { saveRecording, getQueue, getRecording, removeRecording, clearQueue, updateRecordingStatus, appendChunk, assembleChunks, listOrphanedSessions, clearChunks } from './offlineQueue'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`
@@ -119,11 +119,12 @@ function App() {
   const [syncingId, setSyncingId] = useState(null)
   const fieldRecorderRef = useRef(null)
   const fieldStreamRef = useRef(null)
-  const fieldChunksRef = useRef([])
+  const fieldSessionIdRef = useRef(null)
   const [fieldVisitType, setFieldVisitType] = useState('auto')
   const [fieldError, setFieldError] = useState('')
   const [playingId, setPlayingId] = useState(null)
   const playAudioRef = useRef(null)
+  const [orphanedSessions, setOrphanedSessions] = useState([])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
@@ -171,6 +172,42 @@ function App() {
     setOfflineQueue(q)
   }
 
+  async function loadOrphaned() {
+    try {
+      const list = await listOrphanedSessions()
+      setOrphanedSessions(list)
+    } catch {
+      setOrphanedSessions([])
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'field') loadOrphaned()
+  }, [activeTab])
+
+  async function recoverOrphan(sessionId, visitType) {
+    try {
+      const result = await assembleChunks(sessionId)
+      if (result && result.blob && result.blob.size > 0) {
+        await saveRecording(result.blob, visitType || 'auto', `Recovered ${new Date().toLocaleTimeString('en-IN')}`)
+      }
+      await clearChunks(sessionId)
+      await loadOrphaned()
+      await loadQueue()
+    } catch (err) {
+      setFieldError(`Recovery failed: ${err.message}`)
+    }
+  }
+
+  async function discardOrphan(sessionId) {
+    try {
+      await clearChunks(sessionId)
+      await loadOrphaned()
+    } catch (err) {
+      setFieldError(`Discard failed: ${err.message}`)
+    }
+  }
+
   async function startFieldRecording() {
     setFieldError('')
     // Stop any active recorders first
@@ -197,19 +234,32 @@ function App() {
       })
       fieldStreamRef.current = stream
       const recorder = new MediaRecorder(stream)
-      fieldChunksRef.current = []
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) fieldChunksRef.current.push(e.data)
+      const sessionId = (crypto.randomUUID && crypto.randomUUID()) || `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      fieldSessionIdRef.current = sessionId
+      const capturedVisitType = fieldVisitType
+      recorder.ondataavailable = async (e) => {
+        if (e.data && e.data.size > 0) {
+          try { await appendChunk(sessionId, e.data, capturedVisitType) } catch (err) { console.error('appendChunk failed', err) }
+        }
       }
       recorder.onstop = async () => {
-        const blob = new Blob(fieldChunksRef.current, { type: 'audio/webm' })
         stream.getTracks().forEach((t) => t.stop())
         fieldStreamRef.current = null
-        await saveRecording(blob, fieldVisitType)
+        try {
+          const result = await assembleChunks(sessionId)
+          if (result && result.blob && result.blob.size > 0) {
+            await saveRecording(result.blob, capturedVisitType)
+          }
+          await clearChunks(sessionId)
+        } catch (err) {
+          setFieldError(`Save failed: ${err.message}`)
+        }
+        fieldSessionIdRef.current = null
         await loadQueue()
+        await loadOrphaned()
       }
       fieldRecorderRef.current = recorder
-      recorder.start()
+      recorder.start(5000)
       setFieldRecording(true)
     } catch (err) {
       setFieldError(`Microphone error: ${err.name}: ${err.message}`)
@@ -337,7 +387,7 @@ function App() {
         streamRef.current = null
       }
       mediaRecorderRef.current = recorder
-      recorder.start()
+      recorder.start(5000)
       setIsRecording(true)
     } catch {
       setVoiceState((s) => ({ ...s, error: 'Microphone permission denied or unavailable.' }))
@@ -634,6 +684,35 @@ function App() {
       {activeTab === 'field' && (
         <section className="panel">
           <h2>Field Mode — Record Now, Process Later</h2>
+          {orphanedSessions.length > 0 && (
+            <div className="card" style={{ borderLeft: '4px solid #d97706', background: '#fffbeb' }}>
+              <h3 style={{ marginTop: 0 }}>Unfinished recordings detected</h3>
+              <p style={{ marginTop: 4 }}>
+                {orphanedSessions.length} recording{orphanedSessions.length > 1 ? 's were' : ' was'} interrupted
+                (tab closed, browser crashed, or phone locked). You can recover the partial audio or discard it.
+              </p>
+              <div className="queue-list">
+                {orphanedSessions.map((o) => (
+                  <div className="queue-item" key={o.sessionId}>
+                    <div className="queue-meta">
+                      <strong>{prettyLabel(o.visitType || 'auto')}</strong>
+                      <span>{new Date(o.firstSeen).toLocaleString('en-IN')}</span>
+                      <span>{o.chunkCount} chunk{o.chunkCount > 1 ? 's' : ''}</span>
+                      <span>{(o.totalSize / 1024).toFixed(0)} KB</span>
+                    </div>
+                    <div className="queue-item-actions">
+                      <button className="btn primary" onClick={() => recoverOrphan(o.sessionId, o.visitType)}>
+                        Recover
+                      </button>
+                      <button className="btn secondary" onClick={() => discardOrphan(o.sessionId)}>
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="card">
             <div className={`connectivity-badge ${isOnline ? 'online' : 'offline'}`}>
               {isOnline ? 'Connected — ready to sync' : 'Offline — recordings saved locally'}

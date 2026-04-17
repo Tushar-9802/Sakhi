@@ -3,7 +3,7 @@
 Offline-first tool that converts Hindi home visit conversations into structured government health forms and real-time referral decisions for India's 1 million+ ASHA health workers.
 
 **Competition:** [Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon) ($200K prize pool)
-**Track:** Health & Sciences | Ollama deployment
+**Tracks:** Health & Sciences | Ollama | Unsloth
 
 ## Problem
 
@@ -80,14 +80,15 @@ Health Center (laptop, RTX GPU)         Field (any smartphone)
 │  FastAPI server              │ WiFi  │  PWA (service worker     │
 │  Whisper ASR (CTranslate2)   │◄─────►│    caches app offline)   │
 │  Gemma 4 E4B (Ollama)        │ LAN   │  Field Mode: mic record  │
-│  Static frontend serving     │       │  IndexedDB audio queue   │
+│  Static frontend serving     │       │  IndexedDB chunk store   │
 └──────────────────────────────┘       └──────────────────────────┘
 ```
 
 1. ASHA worker opens Sakhi on her phone over health center WiFi — first load caches the app via service worker
 2. Goes to field — app works fully offline, records home visit conversations in Field Mode
-3. Returns to health center — queued recordings sync over LAN and process through the pipeline
-4. Structured forms + danger sign alerts ready for the ANM/medical officer
+3. **Crash-safe recording:** audio chunks are persisted to IndexedDB every 5 seconds during a recording. If the browser tab closes, phone locks, or the app is killed mid-visit, the chunks survive — on reopen, an orange recovery banner offers to reassemble the partial recording
+4. Returns to health center — queued recordings sync over LAN and process through the pipeline
+5. Structured forms + danger sign alerts ready for the ANM/medical officer
 
 ## Form Types
 
@@ -101,10 +102,11 @@ Health Center (laptop, RTX GPU)         Field (any smartphone)
 
 ## Test Results
 
-**Text extraction quality:** 14/15 tests pass (test_ollama_quality.py)
+**Text extraction quality (base Gemma 4 E4B):** 15/15 tests pass (test_ollama_quality.py)
 - 4/4 visit types: ANC, PNC, delivery, child health
 - Zero false danger alarms on normal visits
 - Correct referral escalation on danger cases
+- Avg 18.7s per test (form + danger sign extraction)
 
 **End-to-end audio pipeline:** 13/15 tests pass (87%) — test_pipeline_e2e.py
 - 15 synthetic Hindi audio samples through full pipeline
@@ -116,7 +118,21 @@ Health Center (laptop, RTX GPU)         Field (any smartphone)
 - Covers 0–999 Hindi number words + Whisper misspelling variants
 - Compound values (BP, weight, Hb), decimal points, fractions
 
-**Training data:** 1,154 examples (981 train / 173 val) across 4 visit types, 458 positive danger sign cases
+## Fine-Tuning (Unsloth Track)
+
+We fine-tuned Gemma 4 E4B via Unsloth LoRA on 1,154 synthetic ASHA visit examples (981 train / 173 val) covering all 4 visit types and 458 positive danger sign cases. The resulting adapter is exported as a Q4_K_M GGUF and registered in Ollama as `sakhi:latest`.
+
+**Configuration:** LR 5e-5, 1 epoch, LoRA r=16/alpha=32, dropout 0.05 — conservative hyperparameters to avoid overfitting on a small dataset.
+
+**A/B comparison vs base** (see `RETRAIN_RESULTS.md`, `FIELD_COVERAGE_DIFF.md`):
+- **Pass rate:** base 15/15 vs fine-tune 14/15 (single fail on heavy Hinglish code-switch → over-referral, a safer failure mode)
+- **Latency:** base 18.7s vs fine-tune 19.0s avg — effectively tied
+- **Schema normalization:** the fine-tune consistently translates Hindi symptom phrases into English schema labels ("दस्त" → "Diarrhea", "चक्कर आ रहे हैं" → "dizziness"), making downstream filtering easier. Base retains raw Hindi.
+- **Unique field extractions:** fine-tune recovered 2 visit-type-specific fields the base missed (`anc_details.facility_or_home`, `visit_info.hbyc_visit_month`); base recovered 11 fields the fine-tune left null.
+
+**Production choice:** we kept the base model in the live pipeline for its single-test accuracy edge. The fine-tune demonstrates the reproducible training pipeline and ships as an alternative for deployments that prefer consistent English schema values over raw transcription.
+
+**Export pipeline (Windows):** the training script (`scripts/train_unsloth.py`) handles the full flow — data prep, LoRA training, auto-eval. For GGUF export we use a manual path (`scripts/export_merge.py`) that bypasses Unsloth's Windows mmap issues: load base + adapter via transformers, compute `delta_W = (B @ A) * (alpha/r)` per pair, then `llama.cpp/convert_hf_to_gguf.py` + `llama-quantize Q4_K_M`.
 
 ## Frontend
 
@@ -126,7 +142,7 @@ React + Vite PWA with five tabs:
 |-----|---------|
 | Voice to Form | Record or upload audio, real-time SSE pipeline progress |
 | Text to Form | Paste transcript, extract structured form with example loader |
-| Field Mode | Offline recording queue — record, playback, sync when connected |
+| Field Mode | Crash-safe offline recording queue — chunks persisted every 5s, partial recordings recoverable after tab close |
 | About & Impact | Project context, ASHA program statistics |
 | History | Past extractions with JSON/CSV export |
 
@@ -145,9 +161,14 @@ cd frontend && npm install
 npm run dev                      # Vite dev server on :5173
 
 # Tests
-python scripts/test_ollama_quality.py    # Text extraction (14/15)
+python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
 python scripts/test_pipeline_e2e.py      # Full E2E audio (13/15)
 python scripts/test_asr.py               # Hindi normalization (133/133)
+
+# Retrain + A/B eval (requires RTX GPU, cmake, llama.cpp binaries)
+python scripts/train_unsloth.py                 # Full pipeline: prep, train, export, register, eval
+python scripts/train_unsloth.py --export-only   # Skip training, just export saved adapter
+python scripts/compare_field_coverage.py        # Field-level diff base vs sakhi
 ```
 
 ## Project Structure
@@ -159,18 +180,25 @@ src/hindi_normalize.py              # Hindi number/medical term normalization (1
 configs/schemas/                    # 5 JSON schemas (ANC, PNC, delivery, child health, danger signs)
 frontend/
   src/App.jsx                       # React app — all 5 tabs
-  src/offlineQueue.js               # IndexedDB offline audio queue
+  src/offlineQueue.js               # IndexedDB offline queue + crash-safe chunk persistence
   public/sw.js                      # Service worker for PWA offline caching
   public/manifest.json              # PWA manifest
 scripts/
-  test_ollama_quality.py            # Text extraction quality tests (14/15)
+  test_ollama_quality.py            # A/B quality tests (base 15/15, sakhi 14/15)
   test_pipeline_e2e.py              # End-to-end audio pipeline tests (13/15)
   test_asr.py                       # ASR + Hindi normalization tests (133/133)
   test_function_calling.py          # Gemma 4 function calling validation
   generate_training_data.py         # Synthetic ASHA conversation generation
-  train_unsloth.py                  # LoRA fine-tuning via Unsloth
-  export_ollama.py                  # GGUF → Ollama model export
+  prepare_training.py               # Train/val split, schema cleanup, prompt matching
+  train_unsloth.py                  # Full pipeline: prep, LoRA train, export, register, eval
+  export_merge.py                   # Manual LoRA merge (bypasses Unsloth Windows mmap bug)
+  compare_field_coverage.py         # Field-level diff base vs sakhi
 data/
   processed/train.jsonl             # 981 training examples
   processed/val.jsonl               # 173 validation examples
+models/
+  checkpoints/final/                # Saved LoRA adapter (85MB)
+  exported/sakhi-v2-q4_k_m.gguf     # Quantized fine-tune (5.3GB, registered in Ollama)
+RETRAIN_RESULTS.md                  # A/B score summary
+FIELD_COVERAGE_DIFF.md              # Field-level coverage diff
 ```
