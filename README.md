@@ -3,7 +3,7 @@
 Offline-first tool that converts Hindi home visit conversations into structured government health forms and real-time referral decisions for India's 1 million+ ASHA health workers.
 
 **Competition:** [Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon) ($200K prize pool)
-**Tracks:** Health & Sciences | Ollama | Unsloth
+**Tracks:** Health & Sciences | Ollama | Unsloth | Cactus (Android APK)
 
 ## Problem
 
@@ -75,16 +75,20 @@ Sakhi is a decision-support tool, not a diagnostic system. All outputs require h
 ## Deployment Model
 
 ```
-Health Center (laptop, RTX GPU)         Field (any smartphone)
+Health Center (laptop, RTX GPU)         Field (Android phone)
 ┌──────────────────────────────┐       ┌──────────────────────────┐
-│  FastAPI server              │ WiFi  │  PWA (service worker     │
-│  Whisper ASR (CTranslate2)   │◄─────►│    caches app offline)   │
-│  Gemma 4 E4B (Ollama)        │ LAN   │  Field Mode: mic record  │
-│  Static frontend serving     │       │  IndexedDB chunk store   │
+│  FastAPI server              │ WiFi  │  Native APK (Capacitor)  │
+│  Whisper ASR (CTranslate2)   │◄─────►│  Field Mode: mic record  │
+│  Gemma 4 E4B (Ollama)        │ LAN   │  IndexedDB chunk store   │
+│  Static frontend serving     │       │  (crash-safe, every 5s)  │
 └──────────────────────────────┘       └──────────────────────────┘
 ```
 
-1. ASHA worker opens Sakhi on her phone over health center WiFi — first load caches the app via service worker
+**Two delivery formats from the same codebase:**
+- **PWA** — install via browser, works on any device with a modern browser
+- **Native Android APK** — Capacitor-wrapped, installable `.apk`, same React UI, same offline chunk persistence. Verified end-to-end phone-to-laptop pipeline on Android.
+
+1. ASHA worker installs Sakhi on her phone (APK or PWA) — first load over health center WiFi caches the app
 2. Goes to field — app works fully offline, records home visit conversations in Field Mode
 3. **Crash-safe recording:** audio chunks are persisted to IndexedDB every 5 seconds during a recording. If the browser tab closes, phone locks, or the app is killed mid-visit, the chunks survive — on reopen, an orange recovery banner offers to reassemble the partial recording
 4. Returns to health center — queued recordings sync over LAN and process through the pipeline
@@ -154,11 +158,19 @@ React + Vite PWA with five tabs:
 # Backend
 pip install -r requirements.txt
 ollama pull gemma4:e4b
-python api.py                    # FastAPI on :8000
+python api.py                    # FastAPI on 0.0.0.0:8000 (LAN-accessible)
 
-# Frontend
+# Frontend (PWA)
 cd frontend && npm install
 npm run dev                      # Vite dev server on :5173
+
+# Android APK (Capacitor)
+# Prerequisites: JDK 21 (Temurin), Android Studio with SDK
+cd frontend
+VITE_API_BASE_URL="http://<laptop-LAN-IP>:8000" npm run build
+npx cap sync android
+cd android && ./gradlew assembleDebug
+# APK at: frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
 # Tests
 python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
@@ -183,6 +195,8 @@ frontend/
   src/offlineQueue.js               # IndexedDB offline queue + crash-safe chunk persistence
   public/sw.js                      # Service worker for PWA offline caching
   public/manifest.json              # PWA manifest
+  capacitor.config.json             # Capacitor config (appId com.sakhi.app, http scheme for LAN)
+  android/                          # Native Android project — Capacitor-generated, produces APK
 scripts/
   test_ollama_quality.py            # A/B quality tests (base 15/15, sakhi 14/15)
   test_pipeline_e2e.py              # End-to-end audio pipeline tests (13/15)
