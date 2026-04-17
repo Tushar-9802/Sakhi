@@ -1,5 +1,9 @@
 {
   "appId": "com.sakhi.app",
   "appName": "Sakhi",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
 }
