@@ -1,4 +1,4 @@
-FROM ./models/merged_16bit
+FROM C:/Users/Tushar/Desktop/Gemma/models/exported/sakhi-v2-q4_k_m.gguf
 
 TEMPLATE """{{ if .System }}<start_of_turn>system
 {{ .System }}<end_of_turn>

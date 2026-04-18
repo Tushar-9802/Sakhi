@@ -513,7 +513,7 @@ def run_all_tests(model):
 def main():
     models = [
         "gemma4:e4b-it-q4_K_M",
-        # "sakhi:latest",  # fine-tuned model — disabled, worse than base
+        "sakhi:latest",  # fine-tuned LoRA — 9/15 vs base 15/15, base wins
     ]
 
     results = {}

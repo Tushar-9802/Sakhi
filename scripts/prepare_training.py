@@ -1,25 +1,13 @@
 """
-MedScribe v2 — Prepare Training Data for Unsloth
+Sakhi — Prepare Training Data for Unsloth
 
-Converts raw generated data (JSONL from 03_generate_training_data.py) into
-the chat-format JSONL that Unsloth's SFTTrainer expects for Gemma 4.
-
-Each training example becomes a multi-turn conversation:
-  system: extraction instructions
-  user:   transcript + schema
-  assistant: structured JSON output
-
-Two training tasks per sample:
-  1. Form extraction (ANC/PNC/delivery/child_health)
-  2. Danger sign detection
-
-Also handles train/val split and data quality stats.
+Converts raw generated data into chat-format JSONL for SFTTrainer.
+Fixes from v1: strips schema metadata from assistant outputs, uses trimmed
+danger schema (matching production), correct system prompts.
 
 Usage:
-  python scripts/04_prepare_training.py
-  python scripts/04_prepare_training.py --val-ratio 0.15
+  python scripts/prepare_training.py
 """
-import argparse
 import json
 import os
 import random
@@ -31,12 +19,12 @@ from pathlib import Path
 # ============================================================
 DEFAULT_INPUT_FILE = "data/processed/training_data_raw.jsonl"
 AUGMENTED_INPUT_FILE = "data/processed/training_data_raw_augmented.jsonl"
-# Use augmented data if available, otherwise fall back to original
 INPUT_FILE = AUGMENTED_INPUT_FILE if os.path.exists(AUGMENTED_INPUT_FILE) else DEFAULT_INPUT_FILE
 TRAIN_FILE = "data/processed/train.jsonl"
 VAL_FILE = "data/processed/val.jsonl"
 STATS_FILE = "data/processed/data_stats.json"
 
+# Match production prompts exactly (from app.py)
 FORM_SYSTEM_PROMPT = (
     "You are a clinical data extraction system for India's ASHA health worker program. "
     "Extract structured data from the Hindi/Hinglish home visit conversation into the requested JSON schema. "
@@ -52,10 +40,13 @@ FORM_SYSTEM_PROMPT = (
 
 DANGER_SYSTEM_PROMPT = (
     "You are a clinical danger sign detection system for India's ASHA health worker program. "
-    "Analyze the Hindi/Hinglish home visit conversation for NHM-defined danger signs. "
-    "ONLY flag signs with DIRECT evidence from the conversation. "
-    "Each danger sign MUST include utterance_evidence — the exact Hindi quote that triggered it. "
-    "If NO danger signs are present, return an empty danger_signs array. "
+    "Analyze the Hindi/Hinglish home visit conversation for NHM-defined danger signs.\n\n"
+    "STRICT RULES:\n"
+    "1. ONLY flag a danger sign if the EXACT words proving it appear in the conversation.\n"
+    "2. utterance_evidence MUST be a verbatim copy-paste from the conversation — do NOT paraphrase or fabricate.\n"
+    "3. If a vital sign is NORMAL (e.g., BP 110/70, temperature 37°C), that is NOT a danger sign.\n"
+    "4. Most routine visits have ZERO danger signs. Return an empty danger_signs array when none exist.\n"
+    "5. When in doubt, do NOT flag — a missed flag is better than a false alarm.\n"
     "Return valid JSON only."
 )
 
@@ -63,6 +54,72 @@ DANGER_SYSTEM_PROMPT = (
 def load_schema(name: str) -> dict:
     with open(f"configs/schemas/{name}.json", "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def build_trimmed_danger_schema():
+    """Match production: trimmed danger schema without checklists."""
+    return {
+        "type": "object",
+        "properties": {
+            "visit_type": {
+                "type": "string",
+                "enum": ["antenatal", "postnatal_mother", "newborn", "child_under5"],
+            },
+            "danger_signs": {
+                "type": "array",
+                "description": "Detected danger signs. Empty array [] if none found.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "sign": {"type": "string"},
+                        "category": {"type": "string", "enum": ["immediate_referral", "urgent_care", "monitor_closely"]},
+                        "clinical_value": {"type": ["string", "null"]},
+                        "utterance_evidence": {"type": "string", "description": "REQUIRED: exact verbatim quote"},
+                    },
+                    "required": ["sign", "category", "utterance_evidence"],
+                },
+            },
+            "referral_decision": {
+                "type": "object",
+                "properties": {
+                    "decision": {"type": "string", "enum": ["refer_immediately", "refer_within_24h", "continue_monitoring", "routine_followup"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["decision", "reason"],
+            },
+        },
+        "required": ["visit_type", "danger_signs", "referral_decision"],
+    }
+
+
+def clean_form_output(form_data: dict) -> dict:
+    """Strip any schema metadata from form extraction output."""
+    # Remove JSON Schema metadata keys that GPT-4o sometimes includes
+    for key in ("$schema", "title", "description", "$id", "$ref"):
+        form_data.pop(key, None)
+    return form_data
+
+
+def clean_danger_output(danger_data: dict) -> dict:
+    """Strip schema metadata and checklists — match production trimmed format."""
+    # Remove schema metadata
+    for key in ("$schema", "title", "description", "$id", "$ref"):
+        danger_data.pop(key, None)
+
+    # Remove checklists (production derives these programmatically)
+    danger_data.pop("maternal_danger_signs_checklist", None)
+    danger_data.pop("newborn_danger_signs_checklist", None)
+
+    # Remove evidence_utterances from referral (production builds this from signs)
+    ref = danger_data.get("referral_decision", {})
+    ref.pop("evidence_utterances", None)
+    ref.pop("recommended_facility", None)
+
+    # Strip confidence from individual signs (not in trimmed schema)
+    for sign in danger_data.get("danger_signs", []):
+        sign.pop("confidence", None)
+
+    return danger_data
 
 
 def build_form_user_message(transcript: str, schema: dict) -> str:
@@ -82,7 +139,7 @@ def build_danger_user_message(transcript: str, visit_type: str, schema: dict) ->
     )
 
 
-def raw_to_training_examples(sample: dict, schemas: dict) -> list[dict]:
+def raw_to_training_examples(sample: dict, schemas: dict, danger_schema_trimmed: dict) -> list[dict]:
     """Convert one raw sample into 1-2 training examples (chat format)."""
     examples = []
     transcript = sample["transcript"]
@@ -90,14 +147,14 @@ def raw_to_training_examples(sample: dict, schemas: dict) -> list[dict]:
     form_schema_name = sample["form_schema"]
 
     form_schema = schemas[form_schema_name]
-    danger_schema = schemas["danger_signs"]
 
     # ── Example 1: Form extraction ──
+    form_output = clean_form_output(dict(sample["form_extraction"]))
     examples.append({
         "messages": [
             {"role": "system", "content": FORM_SYSTEM_PROMPT},
             {"role": "user", "content": build_form_user_message(transcript, form_schema)},
-            {"role": "assistant", "content": json.dumps(sample["form_extraction"], ensure_ascii=False)},
+            {"role": "assistant", "content": json.dumps(form_output, ensure_ascii=False)},
         ],
         "metadata": {
             "task": "form_extraction",
@@ -108,12 +165,13 @@ def raw_to_training_examples(sample: dict, schemas: dict) -> list[dict]:
         },
     })
 
-    # ── Example 2: Danger sign detection ──
+    # ── Example 2: Danger sign detection (trimmed schema, matching production) ──
+    danger_output = clean_danger_output(dict(sample["danger_signs_extraction"]))
     examples.append({
         "messages": [
             {"role": "system", "content": DANGER_SYSTEM_PROMPT},
-            {"role": "user", "content": build_danger_user_message(transcript, visit_type, danger_schema)},
-            {"role": "assistant", "content": json.dumps(sample["danger_signs_extraction"], ensure_ascii=False)},
+            {"role": "user", "content": build_danger_user_message(transcript, visit_type, danger_schema_trimmed)},
+            {"role": "assistant", "content": json.dumps(danger_output, ensure_ascii=False)},
         ],
         "metadata": {
             "task": "danger_signs",
@@ -127,22 +185,17 @@ def raw_to_training_examples(sample: dict, schemas: dict) -> list[dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare training data for Unsloth")
-    parser.add_argument("--val-ratio", type=float, default=0.15)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    random.seed(args.seed)
+    random.seed(42)
 
     if not os.path.exists(INPUT_FILE):
         print(f"ABORT: Input not found: {INPUT_FILE}")
-        print(f"Run scripts/generate_training_data.py first.")
         sys.exit(1)
 
     # Load schemas
     schemas = {}
-    for name in ["anc_visit", "pnc_visit", "delivery", "child_health", "danger_signs"]:
+    for name in ["anc_visit", "pnc_visit", "delivery", "child_health"]:
         schemas[name] = load_schema(name)
+    danger_schema_trimmed = build_trimmed_danger_schema()
 
     # Load raw data
     raw_samples = []
@@ -152,19 +205,37 @@ def main():
             if line:
                 raw_samples.append(json.loads(line))
 
-    print(f"Loaded {len(raw_samples)} raw samples")
+    print(f"Loaded {len(raw_samples)} raw samples from {INPUT_FILE}")
 
     # Convert to training examples
     all_examples = []
+    schema_leak_fixed = 0
     for sample in raw_samples:
-        examples = raw_to_training_examples(sample, schemas)
+        # Count schema leakage fixes
+        if "$schema" in sample.get("danger_signs_extraction", {}):
+            schema_leak_fixed += 1
+        if "$schema" in sample.get("form_extraction", {}):
+            schema_leak_fixed += 1
+
+        examples = raw_to_training_examples(sample, schemas, danger_schema_trimmed)
         all_examples.extend(examples)
 
-    print(f"Produced {len(all_examples)} training examples ({len(all_examples) // len(raw_samples)} per sample)")
+    print(f"Produced {len(all_examples)} training examples")
+    if schema_leak_fixed:
+        print(f"Fixed schema leakage in {schema_leak_fixed} examples")
 
-    # ── Oversample positive (danger sign) examples to fix imbalance ──
-    # Raw data is ~32% positive / 68% negative due to stricter validation
-    # on danger sign scenarios. Oversample positive to reach ~45% target.
+    # Verify no leakage remains
+    leaked = 0
+    for ex in all_examples:
+        content = ex["messages"][2]["content"]
+        if '"$schema"' in content or '"title": "' in content[:100]:
+            leaked += 1
+    if leaked:
+        print(f"WARNING: {leaked} examples still have schema leakage!")
+    else:
+        print(f"Schema leakage check: CLEAN")
+
+    # ── Oversample positive danger sign examples to ~45% ──
     danger_positive = [ex for ex in all_examples
                        if ex["metadata"]["task"] == "danger_signs" and ex["metadata"]["has_danger_signs"]]
     danger_negative = [ex for ex in all_examples
@@ -174,7 +245,6 @@ def main():
         current_ratio = len(danger_positive) / (len(danger_positive) + len(danger_negative))
         target_ratio = 0.45
         if current_ratio < target_ratio:
-            # Calculate how many extra positive samples needed
             extra_needed = int((target_ratio * len(danger_negative)) / (1 - target_ratio)) - len(danger_positive)
             extra_needed = max(0, extra_needed)
             if extra_needed > 0:
@@ -182,58 +252,36 @@ def main():
                 all_examples.extend(oversampled)
                 new_pos = len(danger_positive) + extra_needed
                 new_total = new_pos + len(danger_negative)
-                print(f"Oversampled: +{extra_needed} positive danger sign examples "
-                      f"({current_ratio:.0%} → {new_pos/new_total:.0%})")
+                print(f"Oversampled: +{extra_needed} positive danger examples "
+                      f"({current_ratio:.0%} -> {new_pos/new_total:.0%})")
 
-    # Shuffle
     random.shuffle(all_examples)
 
     # Split
-    val_count = max(1, int(len(all_examples) * args.val_ratio))
+    val_count = max(1, int(len(all_examples) * 0.15))
     val_examples = all_examples[:val_count]
     train_examples = all_examples[val_count:]
 
-    print(f"Split: {len(train_examples)} train / {len(val_examples)} val ({args.val_ratio:.0%})")
+    print(f"Split: {len(train_examples)} train / {len(val_examples)} val")
 
     # Write
     for path, examples in [(TRAIN_FILE, train_examples), (VAL_FILE, val_examples)]:
         with open(path, "w", encoding="utf-8") as f:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-        print(f"Wrote {path} ({len(examples)} examples)")
+        print(f"Wrote {path}")
 
     # Stats
     stats = {
         "raw_samples": len(raw_samples),
         "total_examples": len(all_examples),
-        "train_examples": len(train_examples),
-        "val_examples": len(val_examples),
-        "by_task": {},
-        "by_visit_type": {},
-        "danger_sign_balance": {"positive": 0, "negative": 0},
+        "train": len(train_examples),
+        "val": len(val_examples),
+        "schema_leaks_fixed": schema_leak_fixed,
     }
-    for ex in all_examples:
-        meta = ex["metadata"]
-        task = meta["task"]
-        vtype = meta["visit_type"]
-        stats["by_task"][task] = stats["by_task"].get(task, 0) + 1
-        stats["by_visit_type"][vtype] = stats["by_visit_type"].get(vtype, 0) + 1
-        if meta["has_danger_signs"]:
-            stats["danger_sign_balance"]["positive"] += 1
-        else:
-            stats["danger_sign_balance"]["negative"] += 1
-
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f, indent=2)
 
-    # Print stats
-    print(f"\nData Statistics:")
-    print(f"  By task: {json.dumps(stats['by_task'])}")
-    print(f"  By visit type: {json.dumps(stats['by_visit_type'])}")
-    neg = stats['danger_sign_balance']['negative']
-    pos = stats['danger_sign_balance']['positive']
-    total = neg + pos
-    print(f"  Danger sign balance: {pos} positive / {neg} negative ({neg/total*100:.0f}% negative)" if total else "")
     print(f"\nReady for training: python scripts/train_unsloth.py")
 
 

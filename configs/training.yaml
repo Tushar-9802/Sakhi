@@ -1,26 +1,24 @@
 # ============================================================================
-# MedScribe v2 — Unsloth LoRA Training Configuration
-# Task: Hindi audio-to-structured-MCTS-form extraction
+# Sakhi — Unsloth LoRA Training Configuration (v2, fixed)
+# Fixes: lower LR, 1 epoch, dropout, no overfitting
 # Hardware: RTX 5070 Ti (16GB VRAM)
 # ============================================================================
 
 experiment:
-  name: "medscribe-v2-asha-extraction"
-  description: "LoRA fine-tune Gemma 4 E4B for Hindi ASHA visit → MCTS form extraction"
+  name: "sakhi-v2-retrain"
+  description: "LoRA fine-tune Gemma 4 E4B — cleaned training data, conservative hyperparams"
   seed: 42
 
 model:
   base_model: "google/gemma-4-E4B-it"
-  # Unsloth handles quantization internally
   load_in_4bit: true
   max_seq_length: 4096
 
 lora:
   r: 16
-  lora_alpha: 16
-  lora_dropout: 0.0
+  lora_alpha: 32          # alpha=2*r is common; was alpha=r before
+  lora_dropout: 0.05      # was 0.0 — add regularization
   bias: "none"
-  # Gemma 4 target modules (verify via model.named_modules())
   target_modules:
     - "q_proj"
     - "k_proj"
@@ -32,23 +30,23 @@ lora:
 
 training:
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 16  # effective batch = 32
+  gradient_accumulation_steps: 16   # effective batch = 32
   gradient_checkpointing: true
   optim: "adamw_8bit"
-  learning_rate: 2.0e-4
+  learning_rate: 5.0e-5            # was 2e-4 — 4x lower to avoid overfitting
   weight_decay: 0.01
   max_grad_norm: 1.0
-  num_train_epochs: 3
+  num_train_epochs: 1               # was 3 — 1 epoch on 981 examples is enough
   warmup_ratio: 0.1
   lr_scheduler_type: "cosine"
   bf16: true
   tf32: true
-  logging_steps: 25
+  logging_steps: 10
   save_strategy: "steps"
-  save_steps: 100
+  save_steps: 50
   save_total_limit: 3
   evaluation_strategy: "steps"
-  eval_steps: 100
+  eval_steps: 50
   load_best_model_at_end: true
   metric_for_best_model: "eval_loss"
   output_dir: "./models/checkpoints"
@@ -60,8 +58,7 @@ data:
   validation_file: "./data/processed/val.jsonl"
   max_seq_length: 4096
 
-# Export for Ollama deployment
 export:
   gguf_quantization: "q4_k_m"
   output_dir: "./models/exported"
-  ollama_modelfile: "./configs/Modelfile"
+  ollama_model_name: "sakhi"
