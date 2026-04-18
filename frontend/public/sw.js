@@ -1,6 +1,9 @@
-const CACHE_NAME = 'sakhi-v1'
+// Bump CACHE_NAME on every rebuild that changes app shell behavior so the
+// activate handler purges prior caches. Content-hashed /assets/* are safe
+// across versions — this only matters for unhashed files (index.html, sw.js,
+// static icons) and for invalidating stale HTML that pins old bundle hashes.
+const CACHE_NAME = 'sakhi-v2'
 const STATIC_ASSETS = [
-  '/',
   '/manifest.json',
   '/favicon.svg',
 ]
@@ -23,8 +26,27 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event
-  // Don't cache API calls
+  if (request.method !== 'GET') return
   if (request.url.includes('/api/')) return
+
+  const url = new URL(request.url)
+  // Network-first for HTML navigations so a fresh index.html references the
+  // current hashed bundles. Cache-first for everything else (hashed assets,
+  // icons) for offline resilience.
+  const isNav = request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')
+
+  if (isNav) {
+    event.respondWith(
+      fetch(request).then((response) => {
+        if (response.ok) {
+          const clone = response.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+        }
+        return response
+      }).catch(() => caches.match(request))
+    )
+    return
+  }
 
   event.respondWith(
     caches.match(request).then((cached) => {

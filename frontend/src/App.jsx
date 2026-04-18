@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { saveRecording, getQueue, getRecording, removeRecording, clearQueue, updateRecordingStatus, appendChunk, assembleChunks, listOrphanedSessions, clearChunks } from './offlineQueue'
 import Cactus from './lib/cactus'
+import { runPipeline } from './lib/pipeline'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`
@@ -126,6 +127,14 @@ function App() {
   const [playingId, setPlayingId] = useState(null)
   const playAudioRef = useRef(null)
   const [orphanedSessions, setOrphanedSessions] = useState([])
+
+  // On-device Field text-in extraction (Cactus + pipeline.js)
+  const [fieldOnDeviceText, setFieldOnDeviceText] = useState('')
+  const [fieldOnDeviceVisitType, setFieldOnDeviceVisitType] = useState('auto')
+  const [fieldOnDeviceState, setFieldOnDeviceState] = useState({
+    loading: false, error: '', transcript: '', visitType: '', form: null, danger: null, timing: null, _raw: null,
+  })
+  const [devViewEnabled, setDevViewEnabled] = useState(false)
 
   // Cactus on-device probe state
   const [cactusStatus, setCactusStatus] = useState(null)
@@ -274,6 +283,35 @@ function App() {
       pushLog(`destroy failed: ${err.message || err}`)
     } finally {
       setCactusBusy(false)
+    }
+  }
+
+  async function processFieldOnDevice() {
+    const text = fieldOnDeviceText.trim()
+    if (!text) {
+      setFieldOnDeviceState((s) => ({ ...s, error: 'Type a Hindi note first.' }))
+      return
+    }
+    setFieldOnDeviceState({ loading: true, error: '', transcript: '', visitType: '', form: null, danger: null, timing: null, _raw: null })
+    try {
+      const result = await runPipeline({
+        engine: Cactus,
+        transcript: text,
+        visitType: fieldOnDeviceVisitType === 'auto' ? null : fieldOnDeviceVisitType,
+      })
+      setFieldOnDeviceState({
+        loading: false,
+        error: '',
+        transcript: result.transcript,
+        visitType: result.visitType,
+        form: result.form,
+        danger: result.danger,
+        timing: result.timing,
+        _raw: result._raw || null,
+      })
+      saveToHistory('field', result.visitType, result.form, result.danger, result.transcript, result.timing)
+    } catch (err) {
+      setFieldOnDeviceState((s) => ({ ...s, loading: false, error: `On-device extraction failed: ${err.message || err}` }))
     }
   }
 
@@ -426,7 +464,10 @@ function App() {
     audio.play()
   }
 
-  const dangerSigns = useMemo(() => textState.danger?.danger_signs || voiceState.danger?.danger_signs || [], [textState.danger, voiceState.danger])
+  const dangerSigns = useMemo(
+    () => textState.danger?.danger_signs || voiceState.danger?.danger_signs || fieldOnDeviceState.danger?.danger_signs || [],
+    [textState.danger, voiceState.danger, fieldOnDeviceState.danger]
+  )
 
   async function startRecording() {
     // Release any existing mic streams first
@@ -647,7 +688,11 @@ function App() {
     })
   }, [])
 
-  const activeState = activeTab === 'voice' ? voiceState : textState
+  const activeState = activeTab === 'voice'
+    ? voiceState
+    : activeTab === 'field'
+      ? fieldOnDeviceState
+      : textState
 
   return (
     <div className="app-shell">
@@ -805,6 +850,90 @@ function App() {
             </div>
             {fieldError && <div className="error-banner">{fieldError}</div>}
           </div>
+
+          <div className="card" style={{ borderLeft: '4px solid #0f766e' }}>
+            <h3 style={{ marginTop: 0 }}>On-device text → form (no network)</h3>
+            <p className="field-desc">
+              Type a short Hindi note below and Gemma 4 E2B runs entirely on this phone via Cactus
+              to extract the structured form + danger signs. Use this when you need instant feedback
+              without laptop access. Voice recordings above sync to a health-center laptop for
+              full-accuracy Whisper-Large processing.
+            </p>
+            <div className="text-tools">
+              <select value={fieldOnDeviceVisitType} onChange={(e) => setFieldOnDeviceVisitType(e.target.value)}>
+                {VISIT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <button
+                className="btn primary"
+                onClick={processFieldOnDevice}
+                disabled={fieldOnDeviceState.loading || !fieldOnDeviceText.trim()}
+              >
+                {fieldOnDeviceState.loading ? 'Processing on device...' : 'Process on device'}
+              </button>
+            </div>
+            <textarea
+              className="text-input"
+              value={fieldOnDeviceText}
+              onChange={(e) => setFieldOnDeviceText(e.target.value)}
+              placeholder="मरीज़ का नाम सुनीता है, 24 साल, गर्भावस्था 32 सप्ताह, रक्तचाप 120/80..."
+            />
+            {fieldOnDeviceState.loading && (
+              <p style={{ fontSize: 13, color: '#555', marginTop: 8 }}>
+                First run loads the model (~10 s). On-device extraction typically takes 3–5 min
+                total on this phone (form + danger signs).
+              </p>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: '#555', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={devViewEnabled}
+                onChange={(e) => setDevViewEnabled(e.target.checked)}
+              />
+              Developer view — show raw model output per stage
+            </label>
+          </div>
+
+          {devViewEnabled && fieldOnDeviceState._raw && (
+            <div className="card" style={{ background: '#0f172a', color: '#e2e8f0', fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>
+              <h3 style={{ marginTop: 0, color: '#93c5fd' }}>Raw model output</h3>
+              {fieldOnDeviceState._raw.formError && (
+                <p style={{ color: '#fca5a5', fontSize: 12, margin: '4px 0' }}>
+                  form parse: {fieldOnDeviceState._raw.formError}
+                </p>
+              )}
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>$ form extractor →</div>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, background: '#020617', padding: 10, borderRadius: 4, maxHeight: 300, overflow: 'auto' }}>
+{fieldOnDeviceState._raw.form || '(empty)'}
+                </pre>
+              </div>
+              {fieldOnDeviceState._raw.dangerError && (
+                <p style={{ color: '#fca5a5', fontSize: 12, margin: '4px 0' }}>
+                  danger parse: {fieldOnDeviceState._raw.dangerError}
+                </p>
+              )}
+              <div>
+                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>$ danger extractor →</div>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, background: '#020617', padding: 10, borderRadius: 4, maxHeight: 300, overflow: 'auto' }}>
+{fieldOnDeviceState._raw.danger || '(empty)'}
+                </pre>
+              </div>
+              {fieldOnDeviceState.timing && (
+                <div style={{ marginTop: 12, fontSize: 12, color: '#94a3b8' }}>
+                  {Object.entries(fieldOnDeviceState.timing).map(([k, v]) => {
+                    const isMs = k.endsWith('_ms')
+                    const label = isMs ? k.slice(0, -3) : k
+                    const display = isMs
+                      ? (Number(v) >= 1000 ? `${(Number(v) / 1000).toFixed(2)}s` : `${v}ms`)
+                      : `${v}s`
+                    return <span key={k} style={{ marginRight: 12 }}>{label}={display}</span>
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {offlineQueue.length > 0 && (
             <div className="card">
@@ -1015,7 +1144,7 @@ function App() {
                   <div className="card history-entry" key={entry.id} onClick={() => setViewingHistory(entry)}>
                     <div className="history-meta">
                       <strong>{prettyLabel(entry.visitType)}</strong>
-                      <span>{entry.source === 'voice' ? 'Voice' : 'Text'}</span>
+                      <span>{entry.source === 'voice' ? 'Voice' : entry.source === 'field' ? 'On-device' : 'Text'}</span>
                       <span>{entry.date}</span>
                       {entry.timing?.total_s && <span>{entry.timing.total_s}s</span>}
                     </div>
@@ -1090,11 +1219,18 @@ function App() {
 
       {activeState.timing && (
         <div className="timing">
-          {Object.entries(activeState.timing).map(([k, v]) => (
-            <span key={k}>
-              {prettyLabel(k)}: <strong>{String(v)}s</strong>
-            </span>
-          ))}
+          {Object.entries(activeState.timing).map(([k, v]) => {
+            const isMs = k.endsWith('_ms')
+            const label = prettyLabel(isMs ? k.slice(0, -3) : k)
+            const display = isMs
+              ? (Number(v) >= 1000 ? `${(Number(v) / 1000).toFixed(1)}s` : `${v}ms`)
+              : `${v}s`
+            return (
+              <span key={k}>
+                {label}: <strong>{display}</strong>
+              </span>
+            )
+          })}
         </div>
       )}
     </div>

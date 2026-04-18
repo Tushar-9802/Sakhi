@@ -13,6 +13,8 @@ export const FORM_SYSTEM_PROMPT = (
   "3. If blood group, HIV status, or other lab tests are not discussed, they MUST be null — never assume 'negative' or a default group.\n" +
   "4. If the conversation has no speaker labels (ASHA/Patient), still extract data but be extra strict about nulls.\n" +
   "5. Numbers may appear as Hindi words (e.g., 'एक सो दस बटा सत्तर' = 110/70). Convert them to digits.\n" +
+  "6. Distinguish ABSOLUTE weight from weight CHANGE. 'वजन 55 किलो है' = 55 absolute; '3 किलो बढ़ गया' or 'गेन' = weight change — leave absolute weight_kg null.\n" +
+  "7. If the patient says she is currently taking IFA / folic acid / calcium tablets ('ले रही हूँ'), set the corresponding *_given field to the stated value (e.g., 'daily') or a truthy string like 'yes'. Do not leave it null when she confirms taking them.\n" +
   "Return valid JSON only."
 )
 
@@ -29,105 +31,75 @@ export const DANGER_SYSTEM_PROMPT = (
   "Return valid JSON only."
 )
 
-// From app.py:346-358
-export const DANGER_FC_SYSTEM_PROMPT = (
-  "You are a clinical danger sign detection system for India's ASHA health worker program.\n\n" +
-  "Analyze the conversation and use the provided tools:\n" +
-  "1. flag_danger_sign — call ONCE per danger sign found. Evidence MUST be a verbatim quote from the conversation. " +
-  "If NO danger signs exist, do NOT call any tool.\n" +
-  "2. issue_referral — call only if danger signs warrant referral to a facility.\n\n" +
-  "STRICT RULES:\n" +
-  "- ONLY flag a danger sign if the EXACT words proving it appear in the conversation.\n" +
-  "- utterance_evidence MUST be a verbatim copy-paste from the conversation — do NOT paraphrase.\n" +
-  "- If a vital sign is NORMAL (e.g., BP 110/70, temperature 37°C), that is NOT a danger sign.\n" +
-  "- Most routine visits have ZERO danger signs. Do NOT call any tools for normal visits.\n" +
-  "- When in doubt, do NOT flag — a missed flag is better than a false alarm."
-)
-
-// From app.py:283-315
-export const TOOL_FLAG_DANGER_SIGN = {
-  type: 'function',
-  function: {
-    name: 'flag_danger_sign',
-    description:
-      'Flag a single danger sign detected in the patient conversation. ' +
-      'Call once per danger sign found. Do NOT call if no danger signs exist. ' +
-      'The evidence field MUST be an exact verbatim quote from the conversation.',
-    parameters: {
-      type: 'object',
-      properties: {
-        sign: {
-          type: 'string',
-          description: 'Standard NHM danger sign name (e.g., severe_preeclampsia, severe_anemia)',
-        },
-        category: {
-          type: 'string',
-          enum: ['immediate_referral', 'urgent_care', 'monitor_closely'],
-        },
-        clinical_value: {
-          type: ['string', 'null'],
-          description: "Measured value if applicable (e.g., '145/95', '38.5C')",
-        },
-        utterance_evidence: {
-          type: 'string',
-          description: 'REQUIRED: exact verbatim quote from conversation proving this sign',
-        },
-      },
-      required: ['sign', 'category', 'utterance_evidence'],
-    },
-  },
-}
-
-// From app.py:317-344
-export const TOOL_ISSUE_REFERRAL = {
-  type: 'function',
-  function: {
-    name: 'issue_referral',
-    description:
-      'Issue a referral decision based on detected danger signs. ' +
-      'Only call if danger signs warrant referral. Do NOT call for routine visits.',
-    parameters: {
-      type: 'object',
-      properties: {
-        urgency: {
-          type: 'string',
-          enum: ['immediate', 'within_24h', 'routine'],
-        },
-        facility: {
-          type: ['string', 'null'],
-          enum: ['PHC', 'CHC', 'district_hospital', 'FRU', null],
-        },
-        reason: {
-          type: 'string',
-          description: 'Brief clinical reasoning for referral',
-        },
-      },
-      required: ['urgency', 'facility', 'reason'],
-    },
-  },
+/**
+ * Convert a JSON Schema definition to a null-filled instance matching the
+ * schema's shape. Smaller models (Gemma 4 E2B INT4) echo schema metadata
+ * ($schema/title/description/type) back when given the raw schema — sending a
+ * concrete null-valued template sidesteps that failure mode.
+ */
+function schemaToTemplate(schema) {
+  if (!schema || typeof schema !== 'object') return null
+  if (schema.type === 'object' && schema.properties) {
+    const obj = {}
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      obj[key] = schemaToTemplate(prop)
+    }
+    return obj
+  }
+  if (schema.type === 'array') return []
+  // Primitives and union types default to null in the template.
+  return null
 }
 
 /**
- * Build the user prompt for form extraction.
- * Mirrors app.py:853-857.
+ * Build the user prompt for form extraction. On-device (E2B INT4) version —
+ * sends a null-filled template rather than the raw JSON Schema envelope.
+ * Mirrors app.py:853-857 in intent; the server-side path uses its own prompt.
  */
 export function buildFormUserPrompt(transcript, schema) {
+  const template = schemaToTemplate(schema)
   return (
-    'Extract structured data from this ASHA home visit conversation:\n\n' +
-    transcript +
-    '\n\nOutput JSON schema:\n' +
-    JSON.stringify(schema)
+    'Extract structured data from this ASHA home visit conversation.\n\n' +
+    'Conversation:\n' + transcript + '\n\n' +
+    'Fill in the JSON template below. Keep every key exactly as shown. ' +
+    'Set a value only when the conversation explicitly states it — leave all ' +
+    'other keys as null. Do NOT add extra keys. Do NOT include "$schema", ' +
+    '"title", "description", "type", or "properties" in your output. Return ' +
+    'only the filled-in JSON object.\n\n' +
+    'Template:\n' +
+    JSON.stringify(template, null, 2)
   )
 }
 
 /**
- * Build the user prompt for danger-sign function-calling extraction.
- * Mirrors app.py:372-376.
+ * Build the user prompt for danger-sign plain-JSON extraction (on-device E2B).
+ * E2B INT4 does not reliably emit OpenAI-style function calls — plain JSON with
+ * a schema-shaped template is more stable.
  */
-export function buildDangerFCUserPrompt(transcript, visitType) {
+export function buildDangerJsonUserPrompt(transcript, visitType) {
   return (
     'Analyze this ASHA home visit conversation for danger signs.\n\n' +
     'Visit type: ' + visitType + '\n\n' +
-    'Conversation:\n' + transcript
+    'Conversation:\n' + transcript + '\n\n' +
+    'Return ONLY a JSON object with exactly these two keys:\n\n' +
+    '{\n' +
+    '  "danger_signs": [\n' +
+    '    {\n' +
+    '      "sign": "<short name, e.g. severe_preeclampsia, high_bp_with_symptoms, severe_anemia, swelling_face_hands>",\n' +
+    '      "category": "immediate_referral" | "urgent_care" | "monitor_closely",\n' +
+    '      "clinical_value": "<measured value like 150/95, or null if no number>",\n' +
+    '      "utterance_evidence": "<exact verbatim Hindi/English quote from the conversation>"\n' +
+    '    }\n' +
+    '  ],\n' +
+    '  "referral_decision": {\n' +
+    '    "decision": "refer_immediately" | "refer_within_24h" | "continue_monitoring" | "routine_followup",\n' +
+    '    "reason": "<brief clinical reason>"\n' +
+    '  }\n' +
+    '}\n\n' +
+    'Rules:\n' +
+    '- If no danger signs are present, set "danger_signs" to [] and "referral_decision" to null.\n' +
+    '- utterance_evidence MUST be a verbatim copy-paste from the conversation.\n' +
+    '- A vital sign in the normal range (BP 110/70, temperature 37°C, Hb > 11) is NOT a danger sign.\n' +
+    '- Do NOT include any prose, markdown fences, or extra keys. Output ONLY the JSON object.'
   )
 }

@@ -54,13 +54,13 @@ test('SCHEMAS loads all 4 visit-type schemas', () => {
 // Mock engine for pipeline tests
 // -----------------------
 
-function mockEngine({ formText, dangerToolCalls = [] }) {
+function mockEngine({ formText, dangerText = '{"danger_signs":[],"referral_decision":null}' }) {
+  let call = 0
   return {
-    complete: async ({ tools }) => {
-      if (tools) {
-        return { text: '', toolCalls: dangerToolCalls }
-      }
-      return { text: formText }
+    complete: async () => {
+      call++
+      if (call === 1) return { text: formText }
+      return { text: dangerText }
     },
   }
 }
@@ -102,67 +102,68 @@ test('extractForm malformed JSON → returns error', async () => {
 // extractDangerSigns
 // -----------------------
 
-test('extractDangerSigns parses tool calls', async () => {
+test('extractDangerSigns parses JSON output (on-device path)', async () => {
   const transcript = 'सिर में बहुत दर्द हो रहा है और धुंधला दिख रहा है'
-  const engine = mockEngine({
-    formText: '',
-    dangerToolCalls: [
-      {
-        name: 'flag_danger_sign',
-        arguments: {
+  const engine = {
+    complete: async () => ({
+      text: JSON.stringify({
+        danger_signs: [{
           sign: 'severe_headache',
           category: 'immediate_referral',
+          clinical_value: null,
           utterance_evidence: 'सिर में बहुत दर्द हो रहा है',
-        },
-      },
-      {
-        name: 'issue_referral',
-        arguments: { urgency: 'immediate', facility: 'CHC', reason: 'preeclampsia suspected' },
-      },
-    ],
-  })
+        }],
+        referral_decision: { decision: 'refer_immediately', reason: 'preeclampsia suspected' },
+      }),
+    }),
+  }
   const out = await extractDangerSigns({ engine, transcript, visitType: 'anc_visit' })
-  assert.equal(out.danger_signs.length, 1)
-  assert.equal(out.danger_signs[0].sign, 'severe_headache')
-  assert.equal(out.referral_decision.urgency, 'immediate')
+  assert.equal(out.danger.danger_signs.length, 1)
+  assert.equal(out.danger.danger_signs[0].sign, 'severe_headache')
+  assert.equal(out.danger.referral_decision.decision, 'refer_immediately')
+  assert.ok(typeof out.raw === 'string')
 })
 
-test('extractDangerSigns parses stringified arguments', async () => {
-  const engine = mockEngine({
-    dangerToolCalls: [{
-      name: 'flag_danger_sign',
-      arguments: JSON.stringify({
-        sign: 'severe_headache',
-        category: 'immediate_referral',
-        utterance_evidence: 'सिर में बहुत दर्द हो रहा है',
-      }),
-    }],
-  })
+test('extractDangerSigns handles fenced JSON', async () => {
+  const engine = {
+    complete: async () => ({
+      text: '```json\n{"danger_signs":[{"sign":"severe_headache","category":"immediate_referral","utterance_evidence":"सिर में बहुत दर्द हो रहा है"}],"referral_decision":null}\n```',
+    }),
+  }
   const out = await extractDangerSigns({
     engine,
     transcript: 'सिर में बहुत दर्द हो रहा है',
     visitType: 'anc_visit',
   })
-  assert.equal(out.danger_signs.length, 1)
+  assert.equal(out.danger.danger_signs.length, 1)
 })
 
 test('extractDangerSigns validates away ungrounded evidence', async () => {
-  const engine = mockEngine({
-    dangerToolCalls: [{
-      name: 'flag_danger_sign',
-      arguments: {
-        sign: 'seizure',
-        category: 'immediate_referral',
-        utterance_evidence: 'मिर्गी के दौरे आए कल',  // not in transcript
-      },
-    }],
-  })
+  const engine = {
+    complete: async () => ({
+      text: JSON.stringify({
+        danger_signs: [{
+          sign: 'seizure',
+          category: 'immediate_referral',
+          utterance_evidence: 'मिर्गी के दौरे आए कल',  // not in transcript
+        }],
+        referral_decision: null,
+      }),
+    }),
+  }
   const out = await extractDangerSigns({
     engine,
     transcript: 'BP normal है, कोई तकलीफ नहीं',
     visitType: 'anc_visit',
   })
-  assert.equal(out.danger_signs.length, 0)
+  assert.equal(out.danger.danger_signs.length, 0)
+})
+
+test('extractDangerSigns malformed JSON → empty result with error flag', async () => {
+  const engine = { complete: async () => ({ text: 'not json' }) }
+  const out = await extractDangerSigns({ engine, transcript: 't', visitType: 'anc_visit' })
+  assert.equal(out.danger.danger_signs.length, 0)
+  assert.equal(out.error, 'json-parse-failed')
 })
 
 // -----------------------

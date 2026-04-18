@@ -14,11 +14,9 @@ import { detectVisitType } from './visitTypeDetect.js'
 import { validateFormOutput, validateDangerSigns } from './validation.js'
 import {
   FORM_SYSTEM_PROMPT,
-  DANGER_FC_SYSTEM_PROMPT,
-  TOOL_FLAG_DANGER_SIGN,
-  TOOL_ISSUE_REFERRAL,
+  DANGER_SYSTEM_PROMPT,
   buildFormUserPrompt,
-  buildDangerFCUserPrompt,
+  buildDangerJsonUserPrompt,
 } from './prompts.js'
 
 import ancSchema from './schemas/anc_visit.json' with { type: 'json' }
@@ -67,7 +65,7 @@ export async function extractForm({ engine, transcript, visitType }) {
       { role: 'system', content: FORM_SYSTEM_PROMPT },
       { role: 'user', content: buildFormUserPrompt(transcript, schema) },
     ],
-    options: { temperature: 0.1, max_tokens: 2048 },
+    options: { temperature: 0.1, max_tokens: 1024 },
   })
   const parsed = parseJsonLoose(res.text)
   if (!parsed) {
@@ -77,34 +75,31 @@ export async function extractForm({ engine, transcript, visitType }) {
 }
 
 /**
- * Run danger-sign extraction via engine.complete with tools.
- * Parses toolCalls into { danger_signs, referral_decision } shape, then validates.
+ * Run danger-sign extraction via engine.complete as plain JSON (on-device E2B).
+ * E2B INT4 does not reliably emit OpenAI-style tool_calls; plain JSON with a
+ * schema-shaped template is far more stable. Returns { danger, raw, error? }.
  */
 export async function extractDangerSigns({ engine, transcript, visitType }) {
   const res = await engine.complete({
     messages: [
-      { role: 'system', content: DANGER_FC_SYSTEM_PROMPT },
-      { role: 'user', content: buildDangerFCUserPrompt(transcript, visitType) },
+      { role: 'system', content: DANGER_SYSTEM_PROMPT },
+      { role: 'user', content: buildDangerJsonUserPrompt(transcript, visitType) },
     ],
-    tools: [TOOL_FLAG_DANGER_SIGN, TOOL_ISSUE_REFERRAL],
     options: { temperature: 0.1, max_tokens: 1024 },
   })
-
-  const toolCalls = Array.isArray(res.toolCalls) ? res.toolCalls : []
-  const dangerSigns = []
-  let referral = null
-
-  for (const tc of toolCalls) {
-    const name = tc.name || tc.function?.name
-    const args = tc.arguments || tc.function?.arguments
-    const parsedArgs = typeof args === 'string' ? parseJsonLoose(args) : args
-    if (!parsedArgs) continue
-    if (name === 'flag_danger_sign') dangerSigns.push(parsedArgs)
-    else if (name === 'issue_referral') referral = parsedArgs
+  const parsed = parseJsonLoose(res.text)
+  if (!parsed) {
+    return {
+      danger: validateDangerSigns({ danger_signs: [], referral_decision: null }, transcript),
+      raw: res.text,
+      error: 'json-parse-failed',
+    }
   }
-
-  const result = { danger_signs: dangerSigns, referral_decision: referral }
-  return validateDangerSigns(result, transcript)
+  const normalized = {
+    danger_signs: Array.isArray(parsed.danger_signs) ? parsed.danger_signs : [],
+    referral_decision: parsed.referral_decision || null,
+  }
+  return { danger: validateDangerSigns(normalized, transcript), raw: res.text, error: null }
 }
 
 /**
@@ -129,7 +124,7 @@ export async function runPipeline({ engine, transcript, visitType: hintedVisitTy
   timing.form_ms = Date.now() - t2
 
   const t3 = Date.now()
-  const danger = await extractDangerSigns({ engine, transcript: normalized, visitType })
+  const dangerOut = await extractDangerSigns({ engine, transcript: normalized, visitType })
   timing.danger_ms = Date.now() - t3
 
   timing.total_ms = Date.now() - t0
@@ -138,8 +133,13 @@ export async function runPipeline({ engine, transcript, visitType: hintedVisitTy
     transcript: normalized,
     visitType,
     form,
-    danger,
+    danger: dangerOut.danger,
     timing,
-    _raw: { form: raw, formError: error || null },
+    _raw: {
+      form: raw,
+      formError: error || null,
+      danger: dangerOut.raw,
+      dangerError: dangerOut.error || null,
+    },
   }
 }
