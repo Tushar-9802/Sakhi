@@ -20,6 +20,7 @@ os.environ["TORCHDYNAMO_DISABLE"] = "1"
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
@@ -278,6 +279,13 @@ async def process_audio_stream(
             os.unlink(tmp_path)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# Serve built React frontend at / when dist exists (unified desktop UI for health centers).
+# Must be mounted AFTER all /api/* routes so they take priority.
+_FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { saveRecording, getQueue, getRecording, removeRecording, clearQueue, updateRecordingStatus, appendChunk, assembleChunks, listOrphanedSessions, clearChunks } from './offlineQueue'
+import Cactus from './lib/cactus'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`
@@ -126,6 +127,12 @@ function App() {
   const playAudioRef = useRef(null)
   const [orphanedSessions, setOrphanedSessions] = useState([])
 
+  // Cactus on-device probe state
+  const [cactusStatus, setCactusStatus] = useState(null)
+  const [cactusBusy, setCactusBusy] = useState(false)
+  const [cactusLog, setCactusLog] = useState([])
+  const pushLog = (msg) => setCactusLog((prev) => [...prev.slice(-30), `[${new Date().toLocaleTimeString('en-IN')}] ${msg}`])
+
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
       .then((r) => r.json())
@@ -205,6 +212,68 @@ function App() {
       await loadOrphaned()
     } catch (err) {
       setFieldError(`Discard failed: ${err.message}`)
+    }
+  }
+
+  async function cactusCheck() {
+    setCactusBusy(true)
+    try {
+      const s = await Cactus.isAvailable()
+      setCactusStatus(s)
+      pushLog(`status: available=${s.available} modelPresent=${s.modelPresent ?? false}${s.modelFound ? ` @ ${s.modelFound}` : ''}`)
+    } catch (err) {
+      pushLog(`status check failed: ${err.message || err}`)
+      setCactusStatus({ available: false, error: String(err) })
+    } finally {
+      setCactusBusy(false)
+    }
+  }
+
+  async function cactusLoad() {
+    setCactusBusy(true)
+    try {
+      pushLog('loading model...')
+      const r = await Cactus.init()
+      pushLog(`model loaded in ${r.initMs || '?'}ms from ${r.modelPath}`)
+      setCactusStatus((s) => ({ ...(s || {}), ...r, loaded: true }))
+    } catch (err) {
+      pushLog(`init failed: ${err.message || err}`)
+    } finally {
+      setCactusBusy(false)
+    }
+  }
+
+  async function cactusTest() {
+    setCactusBusy(true)
+    try {
+      pushLog('running test completion...')
+      const t0 = Date.now()
+      const r = await Cactus.complete({
+        messages: [
+          { role: 'user', content: 'नमस्ते, आप कैसे हैं?' },
+        ],
+        options: { max_tokens: 64, temperature: 0.3 },
+      })
+      const elapsed = Date.now() - t0
+      pushLog(`got ${r.text?.length || 0} chars in ${elapsed}ms (decode ${r.decodeTps?.toFixed?.(1) || '?'} tps)`)
+      pushLog(`text: ${(r.text || r.raw || '').slice(0, 200)}`)
+    } catch (err) {
+      pushLog(`complete failed: ${err.message || err}`)
+    } finally {
+      setCactusBusy(false)
+    }
+  }
+
+  async function cactusUnload() {
+    setCactusBusy(true)
+    try {
+      await Cactus.destroy()
+      pushLog('model unloaded')
+      setCactusStatus((s) => ({ ...(s || {}), loaded: false, handle: 0 }))
+    } catch (err) {
+      pushLog(`destroy failed: ${err.message || err}`)
+    } finally {
+      setCactusBusy(false)
     }
   }
 
@@ -784,6 +853,34 @@ function App() {
               <p>No recordings saved. Record a visit above — it will be stored on your device for later processing.</p>
             </div>
           )}
+
+          <div className="card" style={{ borderLeft: '4px solid #6366f1', background: '#f5f3ff' }}>
+            <h3 style={{ marginTop: 0 }}>On-Device Probe (Cactus)</h3>
+            <p style={{ marginTop: 4, color: '#555' }}>
+              Diagnostic for Cactus SDK + Gemma on-device inference. Push a Cactus-format model folder to
+              <code> /sdcard/Download/</code> on the phone (must contain <code>config.txt</code>).
+            </p>
+            <div className="audio-tools">
+              <button className="btn secondary" onClick={cactusCheck} disabled={cactusBusy}>Check Status</button>
+              <button className="btn secondary" onClick={cactusLoad} disabled={cactusBusy || !cactusStatus?.modelPresent}>Load Model</button>
+              <button className="btn primary" onClick={cactusTest} disabled={cactusBusy || !cactusStatus?.loaded}>Test Hindi</button>
+              <button className="btn secondary" onClick={cactusUnload} disabled={cactusBusy || !cactusStatus?.loaded}>Unload</button>
+            </div>
+            {cactusStatus && (
+              <div style={{ fontSize: 13, color: '#374151', marginTop: 8 }}>
+                <strong>Status:</strong> available={String(cactusStatus.available)} ·
+                modelPresent={String(cactusStatus.modelPresent ?? false)} ·
+                loaded={String(!!cactusStatus.loaded)} ·
+                handle={cactusStatus.handle || 0}
+                {cactusStatus.modelFound && <div style={{ fontSize: 11, color: '#555', wordBreak: 'break-all' }}>found: {cactusStatus.modelFound}</div>}
+              </div>
+            )}
+            {cactusLog.length > 0 && (
+              <pre style={{ fontSize: 12, background: '#fff', border: '1px solid #e5e7eb', padding: 8, marginTop: 8, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+                {cactusLog.join('\n')}
+              </pre>
+            )}
+          </div>
         </section>
       )}
 

@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANC Visit Extraction",
+  "description": "Extract antenatal care visit data from ASHA home visit conversation. Only extract what is explicitly stated. Use null for unmentioned fields.",
+  "type": "object",
+  "properties": {
+    "patient": {
+      "type": "object",
+      "description": "Patient identification — extract only if mentioned",
+      "properties": {
+        "name": {"type": ["string", "null"]},
+        "husband_name": {"type": ["string", "null"]},
+        "age": {"type": ["integer", "null"]},
+        "address": {"type": ["string", "null"]},
+        "mobile": {"type": ["string", "null"]},
+        "caste_category": {"type": ["string", "null"], "enum": ["SC", "ST", "OBC", "General", null]},
+        "bpl_status": {"type": ["boolean", "null"]}
+      }
+    },
+    "pregnancy": {
+      "type": "object",
+      "description": "Current pregnancy details",
+      "properties": {
+        "lmp_date": {"type": ["string", "null"], "description": "Last menstrual period date if mentioned"},
+        "edd": {"type": ["string", "null"], "description": "Expected date of delivery if mentioned"},
+        "gestational_weeks": {"type": ["integer", "null"]},
+        "gravida": {"type": ["integer", "null"], "description": "Total pregnancies including current"},
+        "para": {"type": ["integer", "null"], "description": "Previous deliveries"},
+        "previous_complications": {"type": ["string", "null"]},
+        "expected_delivery_place": {"type": ["string", "null"]}
+      }
+    },
+    "vitals": {
+      "type": "object",
+      "description": "Vital signs — only if measured/reported during visit",
+      "properties": {
+        "weight_kg": {"type": ["number", "null"]},
+        "bp_systolic": {"type": ["integer", "null"]},
+        "bp_diastolic": {"type": ["integer", "null"]},
+        "hemoglobin_gm_percent": {"type": ["number", "null"]},
+        "temperature_celsius": {"type": ["number", "null"]}
+      }
+    },
+    "anc_details": {
+      "type": "object",
+      "description": "ANC visit specific data",
+      "properties": {
+        "visit_number": {"type": ["integer", "null"], "minimum": 1, "maximum": 4},
+        "facility_or_home": {"type": ["string", "null"]},
+        "urine_albumin": {"type": ["string", "null"], "enum": ["present", "absent", "not_done", null]},
+        "urine_sugar": {"type": ["string", "null"], "enum": ["present", "absent", "not_done", null]},
+        "blood_sugar_fasting": {"type": ["number", "null"]},
+        "blood_sugar_pp": {"type": ["number", "null"]},
+        "tt_dose_given": {"type": ["string", "null"], "enum": ["TT1", "TT2", "Booster", "none", null]},
+        "ifa_tablets_given": {"type": ["integer", "null"], "description": "Number of IFA tablets given"},
+        "folic_acid_given": {"type": ["boolean", "null"]},
+        "fundal_height": {"type": ["string", "null"]},
+        "fetal_heart_rate": {"type": ["string", "null"]},
+        "fetal_presentation": {"type": ["string", "null"]},
+        "fetal_movements": {"type": ["string", "null"], "enum": ["present", "reduced", "absent", null]}
+      }
+    },
+    "lab_results": {
+      "type": "object",
+      "description": "Lab test results if mentioned",
+      "properties": {
+        "blood_group": {"type": ["string", "null"]},
+        "hiv_status": {"type": ["string", "null"], "enum": ["positive", "negative", "not_done", null]},
+        "vdrl_status": {"type": ["string", "null"], "enum": ["reactive", "non_reactive", "not_done", null]},
+        "hbsag_status": {"type": ["string", "null"], "enum": ["positive", "negative", "not_done", null]}
+      }
+    },
+    "symptoms_reported": {
+      "type": "array",
+      "description": "Symptoms mentioned by patient during conversation",
+      "items": {"type": "string"}
+    },
+    "birth_preparedness": {
+      "type": "object",
+      "description": "Birth preparedness checklist items discussed",
+      "properties": {
+        "facility_identified": {"type": ["boolean", "null"]},
+        "transport_arranged": {"type": ["boolean", "null"]},
+        "funds_saved": {"type": ["boolean", "null"]},
+        "blood_donor_identified": {"type": ["boolean", "null"]},
+        "escort_arranged": {"type": ["boolean", "null"]}
+      }
+    },
+    "counseling_provided": {
+      "type": "array",
+      "description": "Health education topics discussed during visit",
+      "items": {"type": "string"}
+    },
+    "next_visit_date": {"type": ["string", "null"]}
+  },
+  "required": ["patient", "pregnancy", "vitals", "anc_details", "symptoms_reported"]
+}

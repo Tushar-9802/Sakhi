@@ -7,6 +7,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+# Android JNI libs (Cactus SDK) — ship with repo for reproducible APK builds
+!frontend/android/app/src/main/jniLibs/**/*.so
 .Python
 build/
 dist/
@@ -123,3 +125,6 @@ submission_*/
 
 # === Reference repo (not part of submission) ===
 MedScribe_v1_ref/
+
+# === Cactus SDK source (cloned for building libcactus.so; .so is committed to jniLibs) ===
+cactus-src/

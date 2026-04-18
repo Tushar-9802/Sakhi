@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Child Health / HBYC Visit Extraction",
+  "description": "Extract child health assessment data from ASHA home visit for children 3-15 months (HBYC protocol).",
+  "type": "object",
+  "properties": {
+    "child": {
+      "type": "object",
+      "properties": {
+        "name": {"type": ["string", "null"]},
+        "age_months": {"type": ["integer", "null"]},
+        "sex": {"type": ["string", "null"], "enum": ["male", "female", null]},
+        "weight_kg": {"type": ["number", "null"]}
+      }
+    },
+    "visit_info": {
+      "type": "object",
+      "properties": {
+        "hbyc_visit_month": {"type": ["integer", "null"], "description": "HBYC schedule: 3, 6, 9, 12, or 15 months"},
+        "visit_date": {"type": ["string", "null"]}
+      }
+    },
+    "growth_assessment": {
+      "type": "object",
+      "properties": {
+        "weight_kg": {"type": ["number", "null"]},
+        "weight_for_age": {"type": ["string", "null"], "enum": ["normal", "underweight", "severely_underweight", null]},
+        "visible_wasting": {"type": ["boolean", "null"]},
+        "edema_both_feet": {"type": ["boolean", "null"]},
+        "pallor": {"type": ["string", "null"], "enum": ["none", "some", "severe", null]}
+      }
+    },
+    "feeding": {
+      "type": "object",
+      "properties": {
+        "breastfeeding_status": {"type": ["string", "null"], "enum": ["exclusive", "continued", "stopped", null]},
+        "complementary_feeding_started": {"type": ["boolean", "null"]},
+        "complementary_feeding_age_months": {"type": ["integer", "null"]},
+        "diet_description": {"type": ["string", "null"]}
+      }
+    },
+    "immunization": {
+      "type": "object",
+      "description": "Immunization status discussed during visit",
+      "properties": {
+        "up_to_date": {"type": ["boolean", "null"]},
+        "vaccines_due": {"type": "array", "items": {"type": "string"}},
+        "vaccines_given_today": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "development": {
+      "type": "object",
+      "description": "Developmental milestones assessed",
+      "properties": {
+        "milestones_appropriate": {"type": ["boolean", "null"]},
+        "concerns": {"type": ["string", "null"]},
+        "red_flags": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "illness_assessment": {
+      "type": "object",
+      "description": "IMNCI-based illness screening",
+      "properties": {
+        "diarrhea": {"type": ["boolean", "null"]},
+        "diarrhea_duration_days": {"type": ["integer", "null"]},
+        "blood_in_stool": {"type": ["boolean", "null"]},
+        "cough": {"type": ["boolean", "null"]},
+        "fast_breathing": {"type": ["boolean", "null"]},
+        "fever": {"type": ["boolean", "null"]},
+        "fever_duration_days": {"type": ["integer", "null"]},
+        "ear_problem": {"type": ["boolean", "null"]},
+        "not_eating_drinking": {"type": ["boolean", "null"]},
+        "vomiting_everything": {"type": ["boolean", "null"]},
+        "lethargic_unconscious": {"type": ["boolean", "null"]}
+      }
+    },
+    "deworming": {
+      "type": "object",
+      "properties": {
+        "given": {"type": ["boolean", "null"]},
+        "date": {"type": ["string", "null"]}
+      }
+    },
+    "vitamin_a": {
+      "type": "object",
+      "properties": {
+        "given": {"type": ["boolean", "null"]},
+        "dose_number": {"type": ["integer", "null"]}
+      }
+    },
+    "symptoms_reported": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "counseling_provided": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["child", "visit_info", "growth_assessment", "feeding", "immunization", "symptoms_reported"]
+}

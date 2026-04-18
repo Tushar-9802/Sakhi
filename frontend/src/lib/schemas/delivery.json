@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Delivery Details Extraction",
+  "description": "Extract delivery and birth outcome details from conversation. Only extract what is explicitly stated.",
+  "type": "object",
+  "properties": {
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "date": {"type": ["string", "null"]},
+        "time": {"type": ["string", "null"]},
+        "place": {"type": ["string", "null"], "enum": ["home", "sub_centre", "PHC", "CHC", "district_hospital", "private_facility", null]},
+        "conducted_by": {"type": ["string", "null"]},
+        "type": {"type": ["string", "null"], "enum": ["normal", "assisted", "caesarean", null]},
+        "complications": {"type": ["string", "null"]}
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "properties": {
+        "live_births": {"type": ["integer", "null"]},
+        "stillbirths": {"type": ["integer", "null"]}
+      }
+    },
+    "infant": {
+      "type": "object",
+      "properties": {
+        "sex": {"type": ["string", "null"], "enum": ["male", "female", null]},
+        "birth_weight_kg": {"type": ["number", "null"]},
+        "term": {"type": ["string", "null"], "enum": ["full_term", "preterm", null]},
+        "cried_at_birth": {"type": ["boolean", "null"]},
+        "breastfed_within_1hr": {"type": ["boolean", "null"]},
+        "birth_defects": {"type": ["string", "null"]},
+        "vaccines_given": {
+          "type": "object",
+          "properties": {
+            "opv_0": {"type": ["boolean", "null"]},
+            "bcg": {"type": ["boolean", "null"]},
+            "hep_b_0": {"type": ["boolean", "null"]},
+            "vitamin_k": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "mother_status": {
+      "type": "object",
+      "properties": {
+        "condition": {"type": ["string", "null"]},
+        "complications": {"type": ["string", "null"]},
+        "ifa_given": {"type": ["boolean", "null"]}
+      }
+    },
+    "symptoms_reported": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["delivery", "outcome", "infant", "symptoms_reported"]
+}

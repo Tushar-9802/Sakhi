@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Danger Sign Detection",
+  "description": "Detect danger signs from ASHA home visit conversation. EVERY flag MUST cite exact utterance evidence. No evidence = no flag. This is the anti-hallucination contract.",
+  "type": "object",
+  "properties": {
+    "visit_type": {
+      "type": "string",
+      "enum": ["antenatal", "postnatal_mother", "newborn", "child_under5"],
+      "description": "Type of visit determines which danger sign checklist applies"
+    },
+    "danger_signs": {
+      "type": "array",
+      "description": "Detected danger signs. Empty array if none found — model MUST learn to return empty.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sign": {
+            "type": "string",
+            "description": "Standard danger sign name from NHM protocol"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["immediate_referral", "urgent_care", "monitor_closely"],
+            "description": "Severity classification per NHM guidelines"
+          },
+          "clinical_value": {
+            "type": ["string", "null"],
+            "description": "Measured value if applicable (e.g., '140/95', '38.5°C', '65 breaths/min')"
+          },
+          "utterance_evidence": {
+            "type": "string",
+            "description": "REQUIRED: Exact quote from conversation that triggered this flag. No quote = hallucination."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Model confidence. Lower for indirect mentions, higher for explicit statements."
+          }
+        },
+        "required": ["sign", "category", "utterance_evidence", "confidence"]
+      }
+    },
+    "referral_decision": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["refer_immediately", "refer_within_24h", "continue_monitoring", "routine_followup"]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Brief clinical reasoning for the decision"
+        },
+        "evidence_utterances": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "All utterances supporting this referral decision"
+        },
+        "recommended_facility": {
+          "type": ["string", "null"],
+          "enum": ["PHC", "CHC", "district_hospital", "FRU", null],
+          "description": "Recommended referral level based on danger sign severity"
+        }
+      },
+      "required": ["decision", "reason", "evidence_utterances"]
+    },
+    "maternal_danger_signs_checklist": {
+      "type": "object",
+      "description": "Explicit checklist — each field assessed as detected/not_detected/not_assessed",
+      "properties": {
+        "severe_vaginal_bleeding": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "convulsions": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "severe_headache_blurred_vision": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "high_fever": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "severe_abdominal_pain": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "fast_difficult_breathing": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "swelling_face_hands": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "reduced_fetal_movement": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "water_break_prom": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "foul_vaginal_discharge": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]}
+      }
+    },
+    "newborn_danger_signs_checklist": {
+      "type": "object",
+      "description": "IMNCI newborn danger signs — assess only for newborn visits",
+      "properties": {
+        "not_feeding_well": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "convulsions": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "fast_breathing_gte60": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "severe_chest_indrawing": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "high_temperature": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "low_temperature": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "no_movement": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "jaundice": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]},
+        "umbilicus_red_pus": {"type": "string", "enum": ["detected", "not_detected", "not_assessed"]}
+      }
+    }
+  },
+  "required": ["visit_type", "danger_signs", "referral_decision"]
+}

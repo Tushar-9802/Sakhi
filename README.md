@@ -11,12 +11,15 @@ India's ASHA workers conduct 50M+ maternal/child health home visits per year acr
 
 ## Solution
 
-Phone records the conversation → Whisper transcribes Hindi audio → Hindi normalization → Gemma 4 extracts structured form data, flags danger signs with evidence, and issues referral decisions — all through a single function calling invocation.
+One product, one core feature — **voice → structured ASHA form + danger-sign alerts** — deployed two ways to match ASHA working reality:
 
-No internet required. No cloud dependency. No physician needed at point of care.
+- **Health-center mode (laptop + E4B via Ollama)**: sub-center / PHC / camp with a shared laptop. Phone records → LAN upload → Whisper ASR + Gemma 4 E4B on GPU → structured JSON back to phone. Fast (~15s per extraction) and accurate.
+- **Field mode (phone + E2B on-device via Cactus SDK)**: village door-to-door, no laptop. Phone records → Cactus loads Gemma 4 E2B directly → structured JSON on-device, fully offline. Slower (~30–100s) but self-contained — works in airplane mode.
+
+Same React UI, same extraction schema, same anti-hallucination pipeline — just swappable inference backends. When the ASHA returns to the health center, recordings queued during field work sync to the laptop for re-processing with the higher-accuracy E4B.
 
 ```
-[Hindi Audio] → Whisper ASR → Hindi Normalization → Gemma 4 E4B (function calling)
+[Hindi Audio] → Whisper ASR → Hindi Normalization → Gemma 4 (function calling)
                                                       ├── extract_form()      → structured MCTS JSON
                                                       ├── flag_danger_sign()  → per-sign with utterance evidence
                                                       └── issue_referral()    → urgency + facility + reasoning
@@ -42,11 +45,12 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 
 ## Architecture
 
-| Component | Model | Size | Role |
-|-----------|-------|------|------|
-| ASR | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 |
-| Normalization | src/hindi_normalize.py | — | Hindi number words → digits, medical term mapping |
-| Clinical Extraction | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral |
+| Component | Model | Size | Role | Deployment |
+|-----------|-------|------|------|------------|
+| ASR | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 | Laptop |
+| Normalization | src/hindi_normalize.py | — | Hindi number words → digits, medical term mapping | Shared (Python server-side; JS port for phone) |
+| Clinical Extraction (health-center mode) | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral | Laptop (GPU) |
+| Clinical Extraction (field mode) | Gemma 4 E2B (INT4 via Cactus SDK) | ~4.4 GB | Same extraction schema, on-device inference | Android (ARM, Snapdragon 7+ Gen 1 or newer) |
 
 **Hindi number normalization:** Algorithmic parser covering all 0–999 Hindi number words with Whisper misspelling variants. Handles compound medical values: "एक सौ दस बटा सत्तर" → "110/70", "ग्यारह दशमलव पाँच" → "11.5", "तीन किलो दो सौ ग्राम" → "3.2 kg".
 
@@ -75,24 +79,27 @@ Sakhi is a decision-support tool, not a diagnostic system. All outputs require h
 ## Deployment Model
 
 ```
-Health Center (laptop, RTX GPU)         Field (Android phone)
-┌──────────────────────────────┐       ┌──────────────────────────┐
-│  FastAPI server              │ WiFi  │  Native APK (Capacitor)  │
-│  Whisper ASR (CTranslate2)   │◄─────►│  Field Mode: mic record  │
-│  Gemma 4 E4B (Ollama)        │ LAN   │  IndexedDB chunk store   │
-│  Static frontend serving     │       │  (crash-safe, every 5s)  │
-└──────────────────────────────┘       └──────────────────────────┘
+Health Center (laptop, RTX GPU)              Field (Android phone)
+┌────────────────────────────────────┐       ┌──────────────────────────────────┐
+│  python api.py  →  :8000           │◄─────►│  Native APK (Capacitor + React)  │
+│  ├── /api/*   — pipeline endpoints │  WiFi │  ├── Health-center mode:         │
+│  └── /        — React UI (dist/)   │  LAN  │  │   POST audio to laptop :8000  │
+│                                    │       │  └── Field mode (offline):       │
+│  Whisper ASR (CTranslate2)         │       │      Cactus SDK + Gemma 4 E2B    │
+│  Gemma 4 E4B (Ollama)              │       │      on-device INT4 inference    │
+│                                    │       │      IndexedDB chunk persistence │
+│  Desktop browser UI:               │       │      (crash-safe, every 5s)      │
+│  http://localhost:8000             │       │                                  │
+└────────────────────────────────────┘       └──────────────────────────────────┘
 ```
 
-**Two delivery formats from the same codebase:**
-- **PWA** — install via browser, works on any device with a modern browser
-- **Native Android APK** — Capacitor-wrapped, installable `.apk`, same React UI, same offline chunk persistence. Verified end-to-end phone-to-laptop pipeline on Android.
+**Three access points, same backend schema:**
 
-1. ASHA worker installs Sakhi on her phone (APK or PWA) — first load over health center WiFi caches the app
-2. Goes to field — app works fully offline, records home visit conversations in Field Mode
-3. **Crash-safe recording:** audio chunks are persisted to IndexedDB every 5 seconds during a recording. If the browser tab closes, phone locks, or the app is killed mid-visit, the chunks survive — on reopen, an orange recovery banner offers to reassemble the partial recording
-4. Returns to health center — queued recordings sync over LAN and process through the pipeline
-5. Structured forms + danger sign alerts ready for the ANM/medical officer
+1. **Laptop browser** — ANM/medical officer at the health center opens `http://localhost:8000` (or `http://<LAN-IP>:8000` from any laptop on the WiFi). FastAPI serves the built React UI at `/` and the pipeline endpoints at `/api/*`. One command (`python api.py`) starts everything.
+2. **Phone, health-center mode** — APK records and posts to laptop's `:8000` over WiFi. Laptop does Whisper + E4B (fast, accurate). Best extraction quality available.
+3. **Phone, field mode** — APK runs Gemma 4 E2B on-device via Cactus SDK. Slower and smaller model, but zero network dependency — airplane mode works. When the ASHA returns to the health center, recordings queued during field work sync over WiFi for optional re-processing with E4B.
+
+**Crash-safe recording (Field Mode):** audio chunks are persisted to IndexedDB every 5 seconds during a recording. If the browser tab closes, the phone locks, or the app is killed mid-visit, the chunks survive — on reopen, an orange recovery banner offers to reassemble the partial recording.
 
 ## Form Types
 
@@ -140,31 +147,35 @@ We fine-tuned Gemma 4 E4B via Unsloth LoRA on 1,154 synthetic ASHA visit example
 
 ## Frontend
 
-React + Vite PWA with five tabs:
+One React + Vite codebase, shipped as both a browser UI (served by FastAPI at `/`) and a native Android APK (Capacitor-wrapped, same React bundle inside a WebView + native plugins):
 
 | Tab | Purpose |
 |-----|---------|
 | Voice to Form | Record or upload audio, real-time SSE pipeline progress |
 | Text to Form | Paste transcript, extract structured form with example loader |
-| Field Mode | Crash-safe offline recording queue — chunks persisted every 5s, partial recordings recoverable after tab close |
+| Field Mode | Crash-safe offline recording queue — chunks persisted every 5s, partial recordings recoverable after tab close. Includes an **On-Device Probe (Cactus)** card for loading/testing Gemma 4 E2B directly on the phone |
 | About & Impact | Project context, ASHA program statistics |
 | History | Past extractions with JSON/CSV export |
+
+**JS pipeline port** (`frontend/src/lib/`) — the Python extraction pipeline (Hindi normalization, visit-type detection, form/danger prompts, 6-layer validation) has a full JS port so the phone can run the same logic against the on-device Cactus engine, engine-agnostic by design. 61/61 unit tests pass under `node --test`.
 
 ## Quick Start
 
 ```bash
 # Prerequisites: Python 3.11+, Node 18+, Ollama, CUDA GPU (16GB VRAM recommended)
 
-# Backend
+# ── Health-center deployment (laptop, unified UI + API) ──
 pip install -r requirements.txt
 ollama pull gemma4:e4b
-python api.py                    # FastAPI on 0.0.0.0:8000 (LAN-accessible)
+cd frontend && npm install && npm run build && cd ..
+python api.py
+# Browser: http://localhost:8000  (React UI)
+# Phone APK (on same WiFi): posts to http://<laptop-LAN-IP>:8000
 
-# Frontend (PWA)
-cd frontend && npm install
-npm run dev                      # Vite dev server on :5173
+# ── Frontend dev mode (hot-reload) ──
+cd frontend && npm run dev           # Vite on :5173, proxies /api to :8000
 
-# Android APK (Capacitor)
+# ── Android APK (Capacitor, field-deployable) ──
 # Prerequisites: JDK 21 (Temurin), Android Studio with SDK
 cd frontend
 VITE_API_BASE_URL="http://<laptop-LAN-IP>:8000" npm run build
@@ -172,10 +183,15 @@ npx cap sync android
 cd android && ./gradlew assembleDebug
 # APK at: frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
+# ── On-device Cactus model (for field mode) ──
+# Download INT4 Gemma 4 E2B from https://huggingface.co/Cactus-Compute (HF-gated)
+# Push to phone's app-private storage via adb (see scripts/ or docs for detail)
+
 # Tests
 python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
 python scripts/test_pipeline_e2e.py      # Full E2E audio (13/15)
 python scripts/test_asr.py               # Hindi normalization (133/133)
+cd frontend && npm test                  # JS pipeline port (61/61)
 
 # Retrain + A/B eval (requires RTX GPU, cmake, llama.cpp binaries)
 python scripts/train_unsloth.py                 # Full pipeline: prep, train, export, register, eval
@@ -186,17 +202,28 @@ python scripts/compare_field_coverage.py        # Field-level diff base vs sakhi
 ## Project Structure
 
 ```
-api.py                              # FastAPI backend — SSE streaming, tool_calls metadata
+api.py                              # FastAPI backend — SSE streaming + static mount of frontend/dist
 app.py                              # Core pipeline — function calling, ASR, extraction, validation
 src/hindi_normalize.py              # Hindi number/medical term normalization (160 number words)
 configs/schemas/                    # 5 JSON schemas (ANC, PNC, delivery, child health, danger signs)
 frontend/
-  src/App.jsx                       # React app — all 5 tabs
+  src/App.jsx                       # React app — all 5 tabs, Cactus probe card in Field Mode
   src/offlineQueue.js               # IndexedDB offline queue + crash-safe chunk persistence
-  public/sw.js                      # Service worker for PWA offline caching
+  src/lib/                          # JS port of Python pipeline (engine-agnostic)
+    hindiNormalize.js               # Full port of src/hindi_normalize.py
+    visitTypeDetect.js              # Visit-type keyword heuristic
+    validation.js                   # 6-layer anti-hallucination
+    prompts.js                      # FORM + DANGER prompts + tool specs
+    pipeline.js                     # Orchestrator (works with any inference engine)
+    cactus.js                       # Capacitor facade for Cactus SDK
+    __tests__/                      # 61/61 assertions pass under node --test
+  public/sw.js                      # Service worker for PWA offline caching (browser install)
   public/manifest.json              # PWA manifest
   capacitor.config.json             # Capacitor config (appId com.sakhi.app, http scheme for LAN)
   android/                          # Native Android project — Capacitor-generated, produces APK
+    app/src/main/java/com/cactus/Cactus.kt             # Cactus SDK Kotlin wrapper
+    app/src/main/java/com/sakhi/app/CactusPlugin.kt    # Capacitor plugin bridging JS ↔ Cactus
+    app/src/main/jniLibs/arm64-v8a/libcactus.so        # Cactus native lib (built from cactus-src)
 scripts/
   test_ollama_quality.py            # A/B quality tests (base 15/15, sakhi 14/15)
   test_pipeline_e2e.py              # End-to-end audio pipeline tests (13/15)
@@ -210,9 +237,11 @@ scripts/
 data/
   processed/train.jsonl             # 981 training examples
   processed/val.jsonl               # 173 validation examples
+  role_play_scripts.md              # Hindi role-play scripts for real-voice validation (4 scenarios)
 models/
   checkpoints/final/                # Saved LoRA adapter (85MB)
   exported/sakhi-v2-q4_k_m.gguf     # Quantized fine-tune (5.3GB, registered in Ollama)
+  cactus/gemma-4-e2b/               # INT4 on-device model for Cactus (not committed; HF-gated download)
 RETRAIN_RESULTS.md                  # A/B score summary
 FIELD_COVERAGE_DIFF.md              # Field-level coverage diff
 ```
