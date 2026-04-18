@@ -4,6 +4,7 @@ Offline-first tool that converts Hindi home visit conversations into structured 
 
 **Competition:** [Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon) ($200K prize pool)
 **Tracks:** Health & Sciences | Ollama | Unsloth | Cactus (Android APK)
+**Partner frameworks:** [Gemma 4](https://blog.google/technology/developers/gemma-3/) (E2B + E4B), [Cactus SDK](https://github.com/cactus-compute/cactus) (on-device Android), [Ollama](https://ollama.ai) (laptop GPU), [Unsloth](https://unsloth.ai) (LoRA fine-tune), [Whisper](https://github.com/openai/whisper) (Hindi ASR via CTranslate2)
 
 ## Problem
 
@@ -16,7 +17,7 @@ One product, one extraction schema, one anti-hallucination pipeline — deployed
 - **Health-center mode (laptop + E4B via Ollama)** — sub-center / PHC / camp with a shared laptop. Phone records Hindi audio → LAN upload → Whisper ASR + Gemma 4 E4B on GPU with native function calling → structured JSON back to phone. Fast (~15 s) and accurate. This is the primary voice-to-form path.
 - **Field mode (phone)** has two offline sub-paths:
   - **Record now, sync later** — ASHA records audio during home visits; chunks persist to IndexedDB every 5 s (crash-safe). When the phone is back on health-center WiFi, the queued recordings post to the laptop for full Whisper + E4B processing. This is the honest voice path — no on-device ASR attempted.
-  - **Type a note for instant on-device extraction** — for when the ASHA wants structured output *right now* without network. A short Hindi note in a textarea runs through the full pipeline (normalize → detect visit type → extract form → detect danger signs) entirely on-device via Gemma 4 E2B INT4 on the Cactus SDK. Same schema, same validation as the laptop path. ~5 min on Snapdragon 8+ Gen 1.
+  - **Type a note for instant on-device extraction** — for when the ASHA wants structured output *right now* without network. A short Hindi note in a textarea runs through the full pipeline (normalize → detect visit type → extract form → detect danger signs) entirely on-device via Gemma 4 E2B INT4 on the Cactus SDK. Same schema, same validation as the laptop path. Pipeline latency is ≈ 5 min on a Snapdragon 8+ Gen 1 phone. This is acceptable against the clinical baseline: the status quo is an ASHA hand-filling the same form from memory (15–20 min), carrying it to the PHC (another walk), then waiting for a clinician to read and act on it (hours to days). A 5-minute wait for on-device structured extraction + flagged danger signs is a net time save, not a UX compromise — and it works with zero network, zero shared infrastructure.
 
 ```
 Laptop path:
@@ -56,7 +57,7 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 | ASR (laptop path only) | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 | Laptop |
 | Normalization | src/hindi_normalize.py | — | Hindi number words → digits, medical term mapping | Shared (Python server-side; JS port for phone) |
 | Clinical Extraction (health-center mode, audio-in) | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral | Laptop (GPU) |
-| Clinical Extraction (field mode, text-in) | Gemma 4 E2B (INT4 via Cactus SDK) | ~4.4 GB | Same extraction schema, plain-JSON mode (E2B INT4 does not reliably emit OpenAI-style `tool_calls`) | Android (ARM, Snapdragon 7+ Gen 1 or newer) |
+| Clinical Extraction (field mode, text-in) | Gemma 4 E2B (INT4 via Cactus SDK) | ~4.4 GB download / ~6.3 GB on-device extracted (multimodal package includes audio + vision encoders that the text-in path does not use) | Same extraction schema, plain-JSON mode (E2B INT4 does not reliably emit OpenAI-style `tool_calls`) | Android (ARM, Snapdragon 7+ Gen 1 or newer, 8 GB RAM, ~7 GB free storage for the one-time install) |
 
 **Hindi number normalization:** Algorithmic parser covering all 0–999 Hindi number words with Whisper misspelling variants. Handles compound medical values: "एक सौ दस बटा सत्तर" → "110/70", "ग्यारह दशमलव पाँच" → "11.5", "तीन किलो दो सौ ग्राम" → "3.2 kg".
 
@@ -192,8 +193,12 @@ cd android && ./gradlew assembleDebug
 # APK at: frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
 # ── On-device Cactus model (for field mode) ──
-# Download INT4 Gemma 4 E2B from https://huggingface.co/Cactus-Compute (HF-gated)
-# Push to phone's app-private storage via adb (see scripts/ or docs for detail)
+# One-command: accepts Cactus terms on HF, downloads INT4 weights, pushes
+# to app-private storage on a connected debuggable Android device.
+# Prerequisite: Sakhi APK must be installed on the phone first.
+export HF_TOKEN=hf_...            # read token, repo must be accepted on HF UI
+bash scripts/setup_cactus_model.sh
+# Full prerequisites + troubleshooting documented inside the script header.
 
 # Tests
 python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
@@ -229,9 +234,9 @@ frontend/
   public/manifest.json              # PWA manifest
   capacitor.config.json             # Capacitor config (appId com.sakhi.app, http scheme for LAN)
   android/                          # Native Android project — Capacitor-generated, produces APK
-    app/src/main/java/com/cactus/Cactus.kt             # Cactus SDK Kotlin wrapper
+    app/src/main/java/com/cactus/Cactus.kt             # Cactus SDK Kotlin wrapper (vendored from cactus-src; upstream publishes no Maven artifact)
     app/src/main/java/com/sakhi/app/CactusPlugin.kt    # Capacitor plugin bridging JS ↔ Cactus
-    app/src/main/jniLibs/arm64-v8a/libcactus.so        # Cactus native lib (built from cactus-src)
+    app/src/main/jniLibs/arm64-v8a/libcactus.so        # Cactus native library (66 MB, arm64-v8a). Committed to repo via .gitignore negation because the Cactus project publishes no prebuilt Android .so and no Maven artifact. Build provenance: compiled from github.com/cactus-compute/cactus via its upstream android/build.sh with NDK r27b + CMake 3.22.1 + Ninja on Windows Git Bash. To rebuild: clone cactus, set ANDROID_NDK_HOME + CMAKE_GENERATOR=Ninja, run `bash android/build.sh`. Output .so replaces this file.
 scripts/
   test_ollama_quality.py            # A/B quality tests (base 15/15, sakhi 14/15)
   test_pipeline_e2e.py              # End-to-end audio pipeline tests (13/15)
