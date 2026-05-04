@@ -53,19 +53,42 @@ def startup():
 
 
 # ── Models ──
+class PatientMetadata(BaseModel):
+    """ASHA-entered patient identifier fields. All optional — pipeline still runs without them.
+    When provided, override LLM-extracted name/age/sex in the form (see apply_metadata in app.py)."""
+    patient_name: Optional[str] = None
+    patient_age: Optional[int] = None
+    age_unit: Optional[str] = None        # "years" | "months"
+    patient_sex: Optional[str] = None     # "male" | "female"
+    patient_mobile: Optional[str] = None
+    asha_id: Optional[str] = None
+    visit_date: Optional[str] = None      # ISO date string
+
+
 class TextRequest(BaseModel):
     transcript: str
     visit_type: Optional[str] = "auto"
+    metadata: Optional[PatientMetadata] = None
 
 
 class ExtractionResult(BaseModel):
     visit_type: str
     form: Optional[dict] = None
     danger: Optional[dict] = None
+    metadata: Optional[dict] = None
     transcript: Optional[str] = None
     timing: dict = {}
     tool_calls: Optional[list] = None
     error: Optional[str] = None
+
+
+def _metadata_dict(meta):
+    """Coerce a PatientMetadata or None into a dict (or None if empty)."""
+    if meta is None:
+        return None
+    d = meta.dict() if hasattr(meta, "dict") else dict(meta)
+    # Drop all-None entries so apply_metadata short-circuits cleanly
+    return {k: v for k, v in d.items() if v is not None and v != ""} or None
 
 
 # ── Endpoints ──
@@ -98,8 +121,8 @@ def process_text(req: TextRequest):
     else:
         visit_type = detect_visit_type(transcript)
 
-    # Unified extraction (function calling if enabled, else separate calls)
-    result = extract_all(transcript, visit_type)
+    metadata = _metadata_dict(req.metadata)
+    result = extract_all(transcript, visit_type, metadata=metadata)
 
     total = time.time() - t_total
     timing = result.get("timing", {})
@@ -109,6 +132,7 @@ def process_text(req: TextRequest):
         visit_type=visit_type,
         form=result["form"],
         danger=result["danger"],
+        metadata=result.get("metadata"),
         timing=timing,
         tool_calls=result.get("tool_calls"),
     )
@@ -118,6 +142,13 @@ def process_text(req: TextRequest):
 async def process_audio(
     audio: UploadFile = File(...),
     visit_type: str = Form("auto"),
+    patient_name: Optional[str] = Form(None),
+    patient_age: Optional[int] = Form(None),
+    age_unit: Optional[str] = Form(None),
+    patient_sex: Optional[str] = Form(None),
+    patient_mobile: Optional[str] = Form(None),
+    asha_id: Optional[str] = Form(None),
+    visit_date: Optional[str] = Form(None),
 ):
     t_total = time.time()
 
@@ -147,8 +178,12 @@ async def process_audio(
         else:
             vtype = detect_visit_type(transcript)
 
-        # Unified extraction
-        result = extract_all(transcript, vtype)
+        metadata = _metadata_dict(PatientMetadata(
+            patient_name=patient_name, patient_age=patient_age, age_unit=age_unit,
+            patient_sex=patient_sex, patient_mobile=patient_mobile,
+            asha_id=asha_id, visit_date=visit_date,
+        ))
+        result = extract_all(transcript, vtype, metadata=metadata)
 
         total = time.time() - t_total
         timing = result.get("timing", {})
@@ -159,6 +194,7 @@ async def process_audio(
             visit_type=vtype,
             form=result["form"],
             danger=result["danger"],
+            metadata=result.get("metadata"),
             transcript=transcript,
             timing=timing,
             tool_calls=result.get("tool_calls"),
@@ -188,10 +224,12 @@ async def process_text_stream(req: TextRequest):
             visit_type = detect_visit_type(transcript)
         yield _sse_event({"stage": "detect", "status": "done", "visit_type": visit_type})
 
+        metadata = _metadata_dict(req.metadata)
+
         # Unified extraction (form + danger in one LLM call via function calling)
         yield _sse_event({"stage": "form", "status": "running"})
         t0 = time.time()
-        result = extract_all(transcript, visit_type)
+        result = extract_all(transcript, visit_type, metadata=metadata)
         extract_time = time.time() - t0
         yield _sse_event({"stage": "form", "status": "done", "time": round(extract_time, 1)})
 
@@ -206,6 +244,7 @@ async def process_text_stream(req: TextRequest):
             "visit_type": visit_type,
             "form": result["form"],
             "danger": result["danger"],
+            "metadata": result.get("metadata"),
             "tool_calls": result.get("tool_calls"),
             "timing": timing,
         })
@@ -217,6 +256,13 @@ async def process_text_stream(req: TextRequest):
 async def process_audio_stream(
     audio: UploadFile = File(...),
     visit_type: str = Form("auto"),
+    patient_name: Optional[str] = Form(None),
+    patient_age: Optional[int] = Form(None),
+    age_unit: Optional[str] = Form(None),
+    patient_sex: Optional[str] = Form(None),
+    patient_mobile: Optional[str] = Form(None),
+    asha_id: Optional[str] = Form(None),
+    visit_date: Optional[str] = Form(None),
 ):
     # Save uploaded audio to temp file before streaming
     suffix = os.path.splitext(audio.filename or "audio.wav")[1]
@@ -224,6 +270,12 @@ async def process_audio_stream(
         content = await audio.read()
         tmp.write(content)
         tmp_path = tmp.name
+
+    metadata = _metadata_dict(PatientMetadata(
+        patient_name=patient_name, patient_age=patient_age, age_unit=age_unit,
+        patient_sex=patient_sex, patient_mobile=patient_mobile,
+        asha_id=asha_id, visit_date=visit_date,
+    ))
 
     def generate():
         t_total = time.time()
@@ -255,7 +307,7 @@ async def process_audio_stream(
             # Unified extraction (form + danger in one LLM call via function calling)
             yield _sse_event({"stage": "form", "status": "running"})
             t1 = time.time()
-            result = extract_all(transcript, vtype)
+            result = extract_all(transcript, vtype, metadata=metadata)
             extract_time = time.time() - t1
             yield _sse_event({"stage": "form", "status": "done", "time": round(extract_time, 1)})
 
@@ -271,6 +323,7 @@ async def process_audio_stream(
                 "visit_type": vtype,
                 "form": result["form"],
                 "danger": result["danger"],
+                "metadata": result.get("metadata"),
                 "transcript": transcript,
                 "tool_calls": result.get("tool_calls"),
                 "timing": timing,

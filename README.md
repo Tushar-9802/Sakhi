@@ -128,7 +128,7 @@ Health Center (laptop, RTX GPU)              Field (Android phone)
 
 **End-to-end audio pipeline:** 13/15 tests pass (87%) — test_pipeline_e2e.py
 - 15 synthetic Hindi audio samples through full pipeline
-- 2 failures are TTS→ASR artifacts on BP values (synthetic audio, not real-world)
+- 2 failures are TTS→ASR artifacts on BP values (synthetic audio, not real-world). Root-cause walkthrough in [FAILURES.md](FAILURES.md).
 - All visit types pass, all danger sign tests pass, all edge cases pass
 - Avg pipeline timing: ~15s per conversation (RTX 5070 Ti, warm Ollama, hybrid json+FC)
 

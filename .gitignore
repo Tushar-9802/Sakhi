@@ -66,6 +66,7 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 data/audio_samples/
+data/recordings/
 *.h5
 *.hdf5
 *.parquet

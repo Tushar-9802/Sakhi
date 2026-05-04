@@ -65,7 +65,9 @@ export async function extractForm({ engine, transcript, visitType }) {
       { role: 'system', content: FORM_SYSTEM_PROMPT },
       { role: 'user', content: buildFormUserPrompt(transcript, schema) },
     ],
-    options: { temperature: 0.1, max_tokens: 1024 },
+    // 768 observed sufficient for the null-filled template output on all
+    // visit types — E2B INT4 trimming ~30 s vs the earlier 1024 cap.
+    options: { temperature: 0.1, max_tokens: 768 },
   })
   const parsed = parseJsonLoose(res.text)
   if (!parsed) {

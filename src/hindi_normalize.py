@@ -129,7 +129,7 @@ WORD_TO_NUM = {
 # ============================================================
 
 MEDICAL_TERMS = {
-    "बीपी": "BP", "भीपी": "BP", "बी पी": "BP", "बी.पी.": "BP",
+    "बीपी": "BP", "भीपी": "BP", "बीबी": "BP", "बी पी": "BP", "बी.पी.": "BP",
     "एचबी": "Hb", "हबी": "Hb", "हीमोग्लोबिन": "Hb", "एच बी": "Hb",
     "आईएफए": "IFA", "आई एफ ए": "IFA",
     "टीटी": "TT", "टी टी": "TT",
@@ -166,38 +166,73 @@ _NUM_SEQ_RE = re.compile(
 )
 
 
-def parse_hindi_number(text):
-    """Parse a sequence of Hindi number words into an integer.
+def _parse_one_number(words, start):
+    """Parse one Hindi number expression starting at words[start].
 
-    Handles:
-      "एक सौ दस"     → 110  (1 × 100 + 10)
-      "एक सौ पचपन"   → 155  (1 × 100 + 55)
-      "दो सौ"         → 200  (2 × 100)
-      "सौ"            → 100
-      "सत्तर"          → 70
-      "अट्ठावन"        → 58
+    Returns (consumed_word_count, value) or (0, None) if no number begins here.
+
+    Recognized patterns:
+      [1-9] सौ [1-99]   →  एक सौ साठ = 160
+      [1-9] सौ           →  दो सौ = 200
+      सौ [1-99]          →  सौ दस = 110
+      सौ                 →  सौ = 100
+      [0-99]             →  अट्ठावन = 58, दस = 10
+
+    Adjacent simple digits are NOT merged: "दो तीन" yields (1, 2) — caller is
+    expected to advance and parse "तीन" as a separate number. This keeps
+    "2-3 days" from collapsing into "5".
+    """
+    n = len(words)
+    if start >= n:
+        return 0, None
+    v0 = WORD_TO_NUM.get(words[start])
+    if v0 is None:
+        return 0, None
+
+    # Pattern: [1-9] सौ [optional 1-99]
+    if 1 <= v0 < 10 and start + 1 < n and WORD_TO_NUM.get(words[start + 1]) == 100:
+        total = v0 * 100
+        if start + 2 < n:
+            v2 = WORD_TO_NUM.get(words[start + 2])
+            if v2 is not None and 0 < v2 < 100:
+                return 3, total + v2
+        return 2, total
+
+    # Pattern: सौ [optional 1-99]
+    if v0 == 100:
+        if start + 1 < n:
+            v1 = WORD_TO_NUM.get(words[start + 1])
+            if v1 is not None and 0 < v1 < 100:
+                return 2, 100 + v1
+        return 1, 100
+
+    # Pattern: any single number word (0-99)
+    return 1, v0
+
+
+def parse_hindi_number(text):
+    """Parse a single Hindi number expression into an integer.
+
+    For sequences of unrelated numbers (e.g. "दो तीन" — two then three),
+    returns only the first parseable number (2). Use convert_numbers() to
+    handle mixed sequences in real transcripts.
+
+    Examples:
+      "एक सौ दस"       → 110
+      "एक सौ पचपन"    → 155
+      "दो सौ"           → 200
+      "सौ"              → 100
+      "सत्तर"            → 70
+      "अट्ठावन"          → 58
+      "नौ सौ निन्यानवे" → 999
     """
     words = text.strip().split()
     if not words:
         return None
-
-    total = 0
-    current = 0
-    found = False
-
-    for word in words:
-        val = WORD_TO_NUM.get(word)
-        if val is None:
-            break
-        found = True
-        if val == 100:
-            current = (current if current > 0 else 1) * 100
-        else:
-            current += val
-
-    if not found:
+    consumed, val = _parse_one_number(words, 0)
+    if consumed == 0:
         return None
-    return total + current
+    return val
 
 
 # Whisper sometimes merges number words (e.g., "एकसो" instead of "एक सो").
@@ -213,13 +248,28 @@ _COMPOUND_SPLIT_MAP = {
 
 
 def convert_numbers(text):
-    """Replace all Hindi number word sequences in text with digit strings."""
+    """Replace all Hindi number word sequences in text with digit strings.
+
+    Within a matched sequence, parses one number at a time using
+    _parse_one_number, so unrelated adjacent number words ("दो तीन")
+    stay as separate digits ("2 3") instead of summing.
+    """
     # Pre-split compound words like "एकसो" → "एक सो"
     text = _COMPOUND_SPLITS.sub(lambda m: _COMPOUND_SPLIT_MAP.get(m.group(0), m.group(0)), text)
 
     def _replace(m):
-        val = parse_hindi_number(m.group(0))
-        return str(val) if val is not None else m.group(0)
+        words = m.group(0).split()
+        out = []
+        i = 0
+        while i < len(words):
+            consumed, val = _parse_one_number(words, i)
+            if consumed == 0:
+                out.append(words[i])
+                i += 1
+            else:
+                out.append(str(val))
+                i += consumed
+        return " ".join(out)
     return _NUM_SEQ_RE.sub(_replace, text)
 
 

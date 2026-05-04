@@ -114,7 +114,7 @@ export const WORD_TO_NUM = {
 }
 
 export const MEDICAL_TERMS = {
-  'बीपी': 'BP', 'भीपी': 'BP', 'बी पी': 'BP', 'बी.पी.': 'BP',
+  'बीपी': 'BP', 'भीपी': 'BP', 'बीबी': 'BP', 'बी पी': 'BP', 'बी.पी.': 'BP',
   'एचबी': 'Hb', 'हबी': 'Hb', 'हीमोग्लोबिन': 'Hb', 'एच बी': 'Hb',
   'आईएफए': 'IFA', 'आई एफ ए': 'IFA',
   'टीटी': 'TT', 'टी टी': 'TT',
@@ -151,31 +151,64 @@ const _NUM_SEQ_RE = new RegExp(
 )
 
 /**
- * Parse a sequence of Hindi number words into an integer.
- * Mirrors Python's parse_hindi_number — including its unreachable `total`
- * variable (bug preserved for parity with training/test vectors).
+ * Parse one Hindi number expression starting at words[start].
+ * Returns [consumedCount, value] or [0, null] if no number begins here.
+ *
+ * Recognized patterns:
+ *   [1-9] सौ [1-99]   →  एक सौ साठ = 160
+ *   [1-9] सौ           →  दो सौ = 200
+ *   सौ [1-99]          →  सौ दस = 110
+ *   सौ                 →  सौ = 100
+ *   [0-99]             →  अट्ठावन = 58
+ *
+ * Adjacent simple digits are NOT merged. "दो तीन" returns [1, 2] — the
+ * caller advances and parses "तीन" as a separate number. Keeps phrases
+ * like "2-3 दिन" from collapsing to "5 दिन".
+ */
+function _parseOneNumber(words, start) {
+  const n = words.length
+  if (start >= n) return [0, null]
+  const v0 = WORD_TO_NUM[words[start]]
+  if (v0 === undefined) return [0, null]
+
+  // [1-9] सौ [optional 1-99]
+  if (v0 >= 1 && v0 < 10 && start + 1 < n && WORD_TO_NUM[words[start + 1]] === 100) {
+    const total = v0 * 100
+    if (start + 2 < n) {
+      const v2 = WORD_TO_NUM[words[start + 2]]
+      if (v2 !== undefined && v2 > 0 && v2 < 100) {
+        return [3, total + v2]
+      }
+    }
+    return [2, total]
+  }
+
+  // सौ [optional 1-99]
+  if (v0 === 100) {
+    if (start + 1 < n) {
+      const v1 = WORD_TO_NUM[words[start + 1]]
+      if (v1 !== undefined && v1 > 0 && v1 < 100) {
+        return [2, 100 + v1]
+      }
+    }
+    return [1, 100]
+  }
+
+  // any single number word (0-99)
+  return [1, v0]
+}
+
+/**
+ * Parse a single Hindi number expression into an integer.
+ * For unrelated adjacent number words ("दो तीन"), returns only the first
+ * parseable number (2). Use convertNumbers() to handle mixed sequences.
  */
 export function parseHindiNumber(text) {
   const words = text.trim().split(/\s+/)
   if (!words.length || words[0] === '') return null
-
-  let total = 0
-  let current = 0
-  let found = false
-
-  for (const word of words) {
-    const val = WORD_TO_NUM[word]
-    if (val === undefined) break
-    found = true
-    if (val === 100) {
-      current = (current > 0 ? current : 1) * 100
-    } else {
-      current += val
-    }
-  }
-
-  if (!found) return null
-  return total + current
+  const [consumed, val] = _parseOneNumber(words, 0)
+  if (consumed === 0) return null
+  return val
 }
 
 // Whisper sometimes merges number words. Split compounds before main parsing.
@@ -186,12 +219,28 @@ const _COMPOUND_SPLIT_MAP = {
   'छहसो': 'छह सो', 'सातसो': 'सात सो', 'आठसो': 'आठ सो', 'नौसो': 'नौ सो',
 }
 
-/** Replace all Hindi number word sequences in text with digit strings. */
+/**
+ * Replace all Hindi number word sequences in text with digit strings.
+ * Within a matched sequence, parses one number at a time so unrelated
+ * adjacent number words ("दो तीन") stay as separate digits ("2 3").
+ */
 export function convertNumbers(text) {
   text = text.replace(_COMPOUND_SPLITS, (m) => _COMPOUND_SPLIT_MAP[m] || m)
   return text.replace(_NUM_SEQ_RE, (m) => {
-    const val = parseHindiNumber(m)
-    return val !== null ? String(val) : m
+    const words = m.split(/\s+/)
+    const out = []
+    let i = 0
+    while (i < words.length) {
+      const [consumed, val] = _parseOneNumber(words, i)
+      if (consumed === 0) {
+        out.push(words[i])
+        i += 1
+      } else {
+        out.push(String(val))
+        i += consumed
+      }
+    }
+    return out.join(' ')
   })
 }
 

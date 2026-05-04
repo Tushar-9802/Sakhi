@@ -212,7 +212,15 @@ def transcribe_audio(audio_path):
         print("[ASR] Whisper loaded.")
 
     print("[ASR] Transcribing...")
-    segments, info = _whisper_model.transcribe(audio_path, language="hi", task="transcribe", vad_filter=True)
+    segments, info = _whisper_model.transcribe(
+        audio_path,
+        language="hi",
+        task="transcribe",
+        vad_filter=True,
+        beam_size=1,
+        temperature=0.0,
+        condition_on_previous_text=False,
+    )
     transcript = " ".join(seg.text.strip() for seg in segments)
 
     transcript = postprocess_transcript(transcript)
@@ -668,8 +676,11 @@ def detect_visit_type(transcript):
                                "खून बहना", "खून आ रहा", "pad ", "पैड "]):
         return "pnc_visit"
     # Child health — older infants/children
-    if any(kw in t for kw in ["बच्चे को", "बच्चा कैसा", "child", "टीका", "vaccine",
-                               "deworming", "vitamin a", "hbyc",
+    # Note: dropped "बच्चे को" — fires falsely on ANC danger-talk like
+    # "तुम्हारा और बच्चे को खतरा" (preeclampsia warning to mother).
+    # "child" also dropped — too generic, can appear in delivery/PNC counseling.
+    if any(kw in t for kw in ["बच्चा कैसा", "बच्चा कैसी", "बच्चे का वजन", "बच्ची का वजन",
+                               "टीका लग", "vaccine", "deworming", "vitamin a", "hbyc",
                                "महीने का", "महीने है", "दस्त", "diarrhea",
                                "खाता है", "खेलता है", "आँखें धँसी",
                                "सुस्त है", "सुस्त हो", "बहुत सुस्त"]):
@@ -717,11 +728,17 @@ def build_trimmed_danger_schema():
 MATERNAL_CHECKLIST_SIGNS = {
     "severe_vaginal_bleeding": ["vaginal bleeding", "severe bleeding", "रक्तस्राव", "खून"],
     "convulsions": ["convulsion", "seizure", "दौरा", "अकड़न"],
-    "severe_headache_blurred_vision": ["headache", "blurred vision", "सिरदर्द", "धुंधला"],
+    # preeclampsia is the diagnostic name the LLM may emit instead of the symptom triad —
+    # treat its presence as an explicit detection of severe headache + blurred vision
+    "severe_headache_blurred_vision": [
+        "headache", "blurred vision", "सिरदर्द", "धुंधला",
+        "preeclampsia", "pre-eclampsia", "प्रीक्लिम्सिया", "प्री-एक्लेम्पसिया",
+    ],
     "high_fever": ["high fever", "fever", "बुखार", "तेज़ बुखार"],
     "severe_abdominal_pain": ["abdominal pain", "पेट दर्द", "पेट में दर्द"],
     "fast_difficult_breathing": ["breathing", "साँस", "सांस"],
-    "swelling_face_hands": ["swelling", "सूजन"],
+    # "सूज" matches the verb-stem (पैर सूज रहे हैं) which "सूजन" does not
+    "swelling_face_hands": ["swelling", "edema", "सूजन", "सूज"],
     "reduced_fetal_movement": ["fetal movement", "reduced movement", "हलचल कम", "हिलता नहीं"],
     "water_break_prom": ["water break", "पानी टूट", "झिल्ली"],
     "foul_vaginal_discharge": ["discharge", "बदबूदार", "स्राव"],
@@ -1028,16 +1045,63 @@ def _validate_fc_danger_signs(danger_signs, transcript):
     return validated
 
 
-def extract_all(transcript, visit_type):
+def apply_metadata(form, visit_type, metadata):
+    """Merge ASHA-entered patient identifier metadata into the LLM-extracted form.
+
+    Metadata keys are schema-agnostic (patient_name, patient_age, age_unit, patient_sex,
+    asha_id, visit_date, patient_mobile). This function overrides whichever schema-specific
+    fields make sense for the visit type — leaving other LLM output untouched.
+
+    PNC and delivery schemas have no patient block, so the metadata is preserved only
+    in the envelope returned alongside the form (see extract_all).
+    """
+    if not form or not isinstance(form, dict) or not metadata:
+        return form
+    name = metadata.get("patient_name") or None
+    age = metadata.get("patient_age")
+    age_unit = (metadata.get("age_unit") or "").lower()
+    sex = (metadata.get("patient_sex") or "").lower() or None
+    mobile = metadata.get("patient_mobile") or None
+
+    if visit_type == "anc_visit":
+        patient = form.setdefault("patient", {}) if isinstance(form.get("patient"), dict) else None
+        if patient is not None:
+            if name: patient["name"] = name
+            if age is not None and age_unit in ("", "years"):
+                patient["age"] = age
+            if mobile: patient["mobile"] = mobile
+    elif visit_type == "child_health":
+        child = form.setdefault("child", {}) if isinstance(form.get("child"), dict) else None
+        if child is not None:
+            if name: child["name"] = name
+            if age is not None:
+                # Convert to months for child_health schema
+                if age_unit == "years":
+                    child["age_months"] = int(age) * 12
+                elif age_unit in ("", "months"):
+                    child["age_months"] = int(age)
+            if sex in ("male", "female"):
+                child["sex"] = sex
+    # pnc_visit and delivery — no schema-level patient block; envelope-only.
+    return form
+
+
+def extract_all(transcript, visit_type, metadata=None):
     """Hybrid extraction: format="json" for form (precise), function calling for danger+referral.
-    Falls back to two format="json" calls if function calling is off."""
+    Falls back to two format="json" calls if function calling is off.
+
+    Optional `metadata` dict (patient identifier fields entered by ASHA before recording)
+    is merged into the form and returned in the envelope. See apply_metadata().
+    """
     if not (USE_OLLAMA and USE_FUNCTION_CALLING):
         # Fallback: two separate json-mode calls
         form_result = extract_form(transcript, visit_type)
         danger_result = extract_danger_signs(transcript, visit_type)
+        form_data = apply_metadata(form_result.get("parsed"), visit_type, metadata)
         return {
-            "form": form_result.get("parsed"),
+            "form": form_data,
             "danger": danger_result.get("parsed"),
+            "metadata": metadata or None,
             "tool_calls": [],
             "timing": {
                 "form_s": round(form_result.get("time_s", 0), 1),
@@ -1107,9 +1171,12 @@ def extract_all(transcript, visit_type):
         "newborn_danger_signs_checklist": newborn_ck,
     }
 
+    form_data = apply_metadata(form_data, visit_type, metadata)
+
     return {
         "form": form_data,
         "danger": danger_data,
+        "metadata": metadata or None,
         "tool_calls": fc_result["tool_calls"],
         "timing": {
             "form_s": round(form_time, 1),
