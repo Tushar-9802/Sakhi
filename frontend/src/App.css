@@ -557,3 +557,61 @@ select {
   display: flex;
   gap: 6px;
 }
+
+.metadata-card {
+  border-left: 4px solid #0d9488;
+}
+
+.metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.metadata-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #475569;
+  font-weight: 500;
+}
+
+.metadata-grid input,
+.metadata-grid select {
+  min-height: 38px;
+  border: 1px solid #cdd9e3;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  background: #fff;
+  color: #0f172a;
+}
+
+.metadata-grid input::placeholder {
+  color: #94a3b8;
+}
+
+.age-row {
+  display: flex;
+  gap: 6px;
+}
+
+.age-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.age-row select {
+  flex: 0 0 96px;
+}
+
+.audio-tools-3 {
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+}
+
+.audio-tools-1 {
+  grid-template-columns: minmax(160px, 240px);
+}

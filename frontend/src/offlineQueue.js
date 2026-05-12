@@ -26,7 +26,7 @@ function openDB() {
   })
 }
 
-export async function saveRecording(audioBlob, visitType = 'auto', label = '') {
+export async function saveRecording(audioBlob, visitType = 'auto', label = '', metadata = null) {
   const db = await openDB()
   const entry = {
     id: Date.now(),
@@ -35,6 +35,7 @@ export async function saveRecording(audioBlob, visitType = 'auto', label = '') {
     audioType: audioBlob.type,
     size: audioBlob.size,
     visitType,
+    metadata: metadata || null,
     label: label || `Recording ${new Date().toLocaleTimeString('en-IN')}`,
     status: 'pending',
   }
@@ -104,7 +105,7 @@ export async function clearQueue() {
   })
 }
 
-export async function appendChunk(sessionId, chunk, visitType = 'auto') {
+export async function appendChunk(sessionId, chunk, visitType = 'auto', metadata = null) {
   const db = await openDB()
   const entry = {
     sessionId,
@@ -112,6 +113,7 @@ export async function appendChunk(sessionId, chunk, visitType = 'auto') {
     blobType: chunk.type,
     size: chunk.size,
     visitType,
+    metadata: metadata || null,
     createdAt: Date.now(),
   }
   return new Promise((resolve, reject) => {
@@ -134,7 +136,13 @@ export async function assembleChunks(sessionId) {
       rows.sort((a, b) => a.id - b.id)
       const type = rows[0].blobType || 'audio/webm'
       const blob = new Blob(rows.map((r) => r.blob), { type })
-      resolve({ blob, visitType: rows[0].visitType, chunkCount: rows.length, firstSeen: rows[0].createdAt })
+      resolve({
+        blob,
+        visitType: rows[0].visitType,
+        metadata: rows[0].metadata || null,
+        chunkCount: rows.length,
+        firstSeen: rows[0].createdAt,
+      })
     }
     req.onerror = () => reject(req.error)
   })

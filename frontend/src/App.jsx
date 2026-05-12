@@ -13,6 +13,87 @@ const VISIT_OPTIONS = [
   { label: 'Child Health', value: 'child_health' },
 ]
 
+function initialMetadata() {
+  const stickyAsha = typeof localStorage !== 'undefined' ? localStorage.getItem('sakhi_asha_id') || '' : ''
+  return {
+    patient_name: '',
+    patient_age: '',
+    age_unit: 'years',
+    patient_sex: '',
+    patient_mobile: '',
+    asha_id: stickyAsha,
+    visit_date: new Date().toISOString().slice(0, 10),
+  }
+}
+
+function appendMetadataToFormData(formData, metadata) {
+  if (!metadata) return
+  for (const [k, v] of Object.entries(metadata)) {
+    if (v !== '' && v != null) formData.append(k, String(v))
+  }
+}
+
+function metadataPayload(metadata) {
+  if (!metadata) return null
+  const out = {}
+  for (const [k, v] of Object.entries(metadata)) {
+    if (v === '' || v == null) continue
+    out[k] = k === 'patient_age' ? Number(v) : v
+  }
+  return Object.keys(out).length ? out : null
+}
+
+function PatientMetadataHeader({ metadata, setMetadata, visitType, setVisitType }) {
+  const update = (k, v) => setMetadata((m) => ({ ...m, [k]: v }))
+  return (
+    <div className="card metadata-card">
+      <h3 style={{ marginTop: 0 }}>Patient &amp; Visit Info</h3>
+      <div className="metadata-grid">
+        <label>
+          <span>ASHA ID</span>
+          <input value={metadata.asha_id} onChange={(e) => update('asha_id', e.target.value)} placeholder="e.g. ASHA-1234" />
+        </label>
+        <label>
+          <span>Visit Date</span>
+          <input type="date" value={metadata.visit_date} onChange={(e) => update('visit_date', e.target.value)} />
+        </label>
+        <label>
+          <span>Visit Type</span>
+          <select value={visitType} onChange={(e) => setVisitType(e.target.value)}>
+            {VISIT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Patient Name</span>
+          <input value={metadata.patient_name} onChange={(e) => update('patient_name', e.target.value)} placeholder="मरीज़ का नाम" />
+        </label>
+        <label>
+          <span>Age</span>
+          <div className="age-row">
+            <input type="number" min="0" max="120" value={metadata.patient_age} onChange={(e) => update('patient_age', e.target.value)} />
+            <select value={metadata.age_unit} onChange={(e) => update('age_unit', e.target.value)}>
+              <option value="years">years</option>
+              <option value="months">months</option>
+            </select>
+          </div>
+        </label>
+        <label>
+          <span>Sex</span>
+          <select value={metadata.patient_sex} onChange={(e) => update('patient_sex', e.target.value)}>
+            <option value="">—</option>
+            <option value="female">female</option>
+            <option value="male">male</option>
+          </select>
+        </label>
+        <label>
+          <span>Mobile</span>
+          <input type="tel" value={metadata.patient_mobile} onChange={(e) => update('patient_mobile', e.target.value)} placeholder="10-digit (optional)" />
+        </label>
+      </div>
+    </div>
+  )
+}
+
 const VOICE_STAGE_META = {
   asr: 'Transcribing audio...',
   normalize: 'Normalizing Hindi numbers...',
@@ -80,7 +161,10 @@ function App() {
   })
   const [viewingHistory, setViewingHistory] = useState(null)
 
-  const [voiceVisitType, setVoiceVisitType] = useState('auto')
+  // Shared by Voice + Field record tabs (a single patient context per session).
+  // Text tab and Field on-device card keep separate visit-type state below.
+  const [recordingVisitType, setRecordingVisitType] = useState('auto')
+  const [metadata, setMetadata] = useState(initialMetadata)
   const [textVisitType, setTextVisitType] = useState('auto')
   const [textInput, setTextInput] = useState('')
   const [selectedExample, setSelectedExample] = useState('')
@@ -122,7 +206,6 @@ function App() {
   const fieldRecorderRef = useRef(null)
   const fieldStreamRef = useRef(null)
   const fieldSessionIdRef = useRef(null)
-  const [fieldVisitType, setFieldVisitType] = useState('auto')
   const [fieldError, setFieldError] = useState('')
   const [playingId, setPlayingId] = useState(null)
   const playAudioRef = useRef(null)
@@ -170,6 +253,10 @@ function App() {
     }
   }, [audioUrl])
 
+  useEffect(() => {
+    if (metadata.asha_id) localStorage.setItem('sakhi_asha_id', metadata.asha_id)
+  }, [metadata.asha_id])
+
   // Online/offline detection + queue loading
   useEffect(() => {
     const goOnline = () => setIsOnline(true)
@@ -205,7 +292,12 @@ function App() {
     try {
       const result = await assembleChunks(sessionId)
       if (result && result.blob && result.blob.size > 0) {
-        await saveRecording(result.blob, visitType || 'auto', `Recovered ${new Date().toLocaleTimeString('en-IN')}`)
+        await saveRecording(
+          result.blob,
+          visitType || 'auto',
+          `Recovered ${new Date().toLocaleTimeString('en-IN')}`,
+          result.metadata,
+        )
       }
       await clearChunks(sessionId)
       await loadOrphaned()
@@ -343,10 +435,11 @@ function App() {
       const recorder = new MediaRecorder(stream)
       const sessionId = (crypto.randomUUID && crypto.randomUUID()) || `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
       fieldSessionIdRef.current = sessionId
-      const capturedVisitType = fieldVisitType
+      const capturedVisitType = recordingVisitType
+      const capturedMetadata = { ...metadata }
       recorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0) {
-          try { await appendChunk(sessionId, e.data, capturedVisitType) } catch (err) { console.error('appendChunk failed', err) }
+          try { await appendChunk(sessionId, e.data, capturedVisitType, capturedMetadata) } catch (err) { console.error('appendChunk failed', err) }
         }
       }
       recorder.onstop = async () => {
@@ -355,7 +448,7 @@ function App() {
         try {
           const result = await assembleChunks(sessionId)
           if (result && result.blob && result.blob.size > 0) {
-            await saveRecording(result.blob, capturedVisitType)
+            await saveRecording(result.blob, capturedVisitType, '', capturedMetadata)
           }
           await clearChunks(sessionId)
         } catch (err) {
@@ -395,6 +488,7 @@ function App() {
     const formData = new FormData()
     formData.append('audio', file)
     formData.append('visit_type', entry.visitType)
+    appendMetadataToFormData(formData, entry.metadata)
 
     try {
       const res = await fetch(`${API_BASE}/api/process-audio-stream`, { method: 'POST', body: formData })
@@ -571,7 +665,8 @@ function App() {
 
     const formData = new FormData()
     formData.append('audio', audioFile)
-    formData.append('visit_type', voiceVisitType)
+    formData.append('visit_type', recordingVisitType)
+    appendMetadataToFormData(formData, metadata)
 
     fetch(`${API_BASE}/api/process-audio-stream`, { method: 'POST', body: formData })
       .then((res) => {
@@ -731,8 +826,14 @@ function App() {
       {activeTab === 'voice' && (
         <section className="panel">
           <h2>Record or upload Hindi ASHA conversation</h2>
+          <PatientMetadataHeader
+            metadata={metadata}
+            setMetadata={setMetadata}
+            visitType={recordingVisitType}
+            setVisitType={setRecordingVisitType}
+          />
           <div className="card">
-            <div className="audio-tools">
+            <div className="audio-tools audio-tools-3">
               <button className={`btn ${isRecording ? 'danger' : ''}`} onClick={isRecording ? stopRecording : startRecording}>
                 {isRecording ? 'Stop Recording' : 'Start Recording'}
               </button>
@@ -740,13 +841,6 @@ function App() {
                 Upload Audio File
                 <input type="file" accept="audio/*" onChange={onUploadAudio} hidden />
               </label>
-              <select value={voiceVisitType} onChange={(e) => setVoiceVisitType(e.target.value)}>
-                {VISIT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
               <button className="btn primary" onClick={processVoice} disabled={voiceState.loading}>
                 {voiceState.loading ? 'Processing...' : 'Process Audio'}
               </button>
@@ -798,6 +892,12 @@ function App() {
       {activeTab === 'field' && (
         <section className="panel">
           <h2>Field Mode — Record Now, Process Later</h2>
+          <PatientMetadataHeader
+            metadata={metadata}
+            setMetadata={setMetadata}
+            visitType={recordingVisitType}
+            setVisitType={setRecordingVisitType}
+          />
           {orphanedSessions.length > 0 && (
             <div className="card" style={{ borderLeft: '4px solid #d97706', background: '#fffbeb' }}>
               <h3 style={{ marginTop: 0 }}>Unfinished recordings detected</h3>
@@ -835,18 +935,13 @@ function App() {
               Record ASHA conversations during home visits. Audio is saved on your device
               and processed when you return to the health center.
             </p>
-            <div className="audio-tools">
+            <div className="audio-tools audio-tools-1">
               <button
                 className={`btn ${fieldRecording ? 'danger' : 'primary'}`}
                 onClick={fieldRecording ? stopFieldRecording : startFieldRecording}
               >
                 {fieldRecording ? 'Stop & Save' : 'Record Visit'}
               </button>
-              <select value={fieldVisitType} onChange={(e) => setFieldVisitType(e.target.value)}>
-                {VISIT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
             </div>
             {fieldError && <div className="error-banner">{fieldError}</div>}
           </div>
