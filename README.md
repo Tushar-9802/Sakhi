@@ -59,6 +59,8 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 | Clinical Extraction (health-center mode, audio-in) | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral | Laptop (GPU) |
 | Clinical Extraction (field mode, text-in) | Gemma 4 E2B (INT4 via Cactus SDK) | ~4.4 GB download / ~6.3 GB on-device extracted (multimodal package includes audio + vision encoders that the text-in path does not use) | Same extraction schema, plain-JSON mode (E2B INT4 does not reliably emit OpenAI-style `tool_calls`) | Android (ARM, Snapdragon 7+ Gen 1 or newer, 8 GB RAM, ~7 GB free storage for the one-time install) |
 
+**Patient demographics enter as a header, not from the audio.** Every clinical EMR works this way: identifiers typed once at intake, the conversation handled separately. The ASHA fills name / age / sex / mobile / ASHA-ID / visit-date in the header above the record button, and the LLM only extracts what was *said* during the visit — symptoms, vitals, counselling, next-visit date. This avoids a failure mode we hit in real-voice testing: Whisper-Hindi sometimes mishears patient names as different Hindi words, and a downstream LLM has no prior on what the name should be. Same merge logic runs on all three paths — `apply_metadata` in `app.py` for laptop audio and text, mirrored as a pure JS function in `pipeline.js` for on-device Cactus extraction — so server and phone produce identical envelopes for the same input. ANC fills `patient.{name, age, mobile}`; child_health fills `child.{name, age_months, sex}` with year→month conversion; PNC and delivery have no patient sub-object in their form, so the metadata travels in the response envelope only. `asha_id` is sticky across sessions via `localStorage`. For Field-mode recordings, the header is captured at record-start so later edits don't pollute earlier queue entries.
+
 **Hindi number normalization:** Algorithmic parser covering all 0–999 Hindi number words with Whisper misspelling variants. Handles compound medical values: "एक सौ दस बटा सत्तर" → "110/70", "ग्यारह दशमलव पाँच" → "11.5", "तीन किलो दो सौ ग्राम" → "3.2 kg".
 
 **Anti-hallucination pipeline (6 layers):**
@@ -158,13 +160,13 @@ One React + Vite codebase, shipped as both a browser UI (served by FastAPI at `/
 
 | Tab | Purpose |
 |-----|---------|
-| Voice to Form | Record or upload audio, real-time SSE pipeline progress (laptop path) |
+| Voice to Form | Record or upload audio, real-time SSE pipeline progress (laptop path). Patient & Visit Info header at the top (name / age / sex / ASHA-ID / visit-date) is posted alongside the audio so demographics don't depend on ASR. |
 | Text to Form | Paste transcript, extract structured form with example loader (laptop path) |
-| Field Mode | Offline-first: crash-safe audio recording queue (IndexedDB every 5 s) for later sync + **on-device text→form card** that runs the full pipeline through Gemma 4 E2B on Cactus SDK + **On-Device Probe** card for loading/health-checking the Cactus model. A "Developer view" toggle shows raw per-stage model output for verification. |
+| Field Mode | Offline-first: crash-safe audio recording queue (IndexedDB every 5 s) for later sync + **on-device text→form card** that runs the full pipeline through Gemma 4 E2B on Cactus SDK + **On-Device Probe** card for loading/health-checking the Cactus model. Same Patient & Visit Info header as the Voice tab; header values are snapshotted at record-start so later edits don't contaminate earlier queue entries. A "Developer view" toggle shows raw per-stage model output for verification. |
 | About & Impact | Project context, ASHA program statistics |
 | History | Past extractions with JSON/CSV export |
 
-**JS pipeline port** (`frontend/src/lib/`) — the Python extraction pipeline (Hindi normalization, visit-type detection, form/danger prompts, 6-layer validation) has a full JS port so the phone can run the same logic against the on-device Cactus engine, engine-agnostic by design. 62/62 unit tests pass under `node --test`.
+**JS pipeline port** (`frontend/src/lib/`) — the Python extraction pipeline (Hindi normalization, visit-type detection, form/danger prompts, 6-layer validation, demographics-header merge) has a full JS port so the phone can run the same logic against the on-device Cactus engine, engine-agnostic by design. 72/72 unit tests pass under `node --test`.
 
 **On-device prompt design note:** E4B via Ollama handles a raw JSON Schema in the form-extraction prompt cleanly. E2B INT4 on Cactus doesn't — it echoes schema metadata (`$schema`, `title`, `description`, `type`) back as output data. The JS port sends a **null-filled instance template** instead (just the field shape with all values as null), and the model's job is to fill in the slots where the transcript says something. Similarly, danger-sign extraction on-device uses plain JSON (E2B doesn't reliably emit OpenAI-style `tool_calls` in Cactus's parseable shape). The laptop E4B path keeps native function calling.
 
@@ -204,7 +206,7 @@ bash scripts/setup_cactus_model.sh
 python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
 python scripts/test_pipeline_e2e.py      # Full E2E audio (13/15)
 python scripts/test_asr.py               # Hindi normalization (133/133)
-cd frontend && npm test                  # JS pipeline port (62/62)
+cd frontend && npm test                  # JS pipeline port (72/72)
 
 # Retrain + A/B eval (requires RTX GPU, cmake, llama.cpp binaries)
 python scripts/train_unsloth.py                 # Full pipeline: prep, train, export, register, eval

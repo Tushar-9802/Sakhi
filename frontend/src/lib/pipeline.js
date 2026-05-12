@@ -56,6 +56,62 @@ export function parseJsonLoose(text) {
 }
 
 /**
+ * Merge ASHA-entered patient identifier metadata into the LLM-extracted form.
+ * Mirrors app.py:apply_metadata so on-device and server paths produce
+ * identical envelopes for the same input.
+ *
+ * Keys consumed (schema-agnostic): patient_name, patient_age, age_unit,
+ * patient_sex, patient_mobile. ASHA-id / visit-date stay envelope-only.
+ *
+ * PNC and delivery have no patient block in the form, so metadata is
+ * preserved only in the envelope (handled by runPipeline's return shape).
+ */
+export function applyMetadata(form, visitType, metadata) {
+  if (!form || typeof form !== 'object' || !metadata) return form
+  const name = metadata.patient_name || null
+  const ageRaw = metadata.patient_age
+  const age = (ageRaw === '' || ageRaw == null) ? null : Number(ageRaw)
+  const ageUnit = (metadata.age_unit || '').toLowerCase()
+  const sex = (metadata.patient_sex || '').toLowerCase() || null
+  const mobile = metadata.patient_mobile || null
+
+  if (visitType === 'anc_visit') {
+    if (form.patient && typeof form.patient === 'object') {
+      if (name) form.patient.name = name
+      if (age != null && Number.isFinite(age) && (ageUnit === '' || ageUnit === 'years')) {
+        form.patient.age = age
+      }
+      if (mobile) form.patient.mobile = mobile
+    }
+  } else if (visitType === 'child_health') {
+    if (form.child && typeof form.child === 'object') {
+      if (name) form.child.name = name
+      if (age != null && Number.isFinite(age)) {
+        if (ageUnit === 'years') form.child.age_months = Math.trunc(age) * 12
+        else if (ageUnit === '' || ageUnit === 'months') form.child.age_months = Math.trunc(age)
+      }
+      if (sex === 'male' || sex === 'female') form.child.sex = sex
+    }
+  }
+  // pnc_visit + delivery: no schema-level patient block; envelope-only.
+  return form
+}
+
+/**
+ * Strip empty/null entries from the metadata object for the envelope.
+ * Returns null if nothing remains.
+ */
+function metadataEnvelope(metadata) {
+  if (!metadata) return null
+  const out = {}
+  for (const [k, v] of Object.entries(metadata)) {
+    if (v === '' || v == null) continue
+    out[k] = (k === 'patient_age' && typeof v === 'string') ? Number(v) : v
+  }
+  return Object.keys(out).length ? out : null
+}
+
+/**
  * Run form extraction via engine.complete, then validate.
  */
 export async function extractForm({ engine, transcript, visitType }) {
@@ -108,7 +164,7 @@ export async function extractDangerSigns({ engine, transcript, visitType }) {
  * Full pipeline. Input: raw Hindi transcript (already normalized OR raw).
  * Output: { transcript, visitType, form, danger, timing }.
  */
-export async function runPipeline({ engine, transcript, visitType: hintedVisitType = null }) {
+export async function runPipeline({ engine, transcript, visitType: hintedVisitType = null, metadata = null }) {
   const timing = {}
   const t0 = Date.now()
 
@@ -125,6 +181,8 @@ export async function runPipeline({ engine, transcript, visitType: hintedVisitTy
   const { form, raw, error } = await extractForm({ engine, transcript: normalized, visitType })
   timing.form_ms = Date.now() - t2
 
+  const mergedForm = applyMetadata(form, visitType, metadata)
+
   const t3 = Date.now()
   const dangerOut = await extractDangerSigns({ engine, transcript: normalized, visitType })
   timing.danger_ms = Date.now() - t3
@@ -134,8 +192,9 @@ export async function runPipeline({ engine, transcript, visitType: hintedVisitTy
   return {
     transcript: normalized,
     visitType,
-    form,
+    form: mergedForm,
     danger: dangerOut.danger,
+    metadata: metadataEnvelope(metadata),
     timing,
     _raw: {
       form: raw,

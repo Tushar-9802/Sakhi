@@ -5,6 +5,7 @@ import {
   extractForm,
   extractDangerSigns,
   runPipeline,
+  applyMetadata,
   SCHEMAS,
 } from '../pipeline.js'
 
@@ -200,4 +201,97 @@ test('runPipeline falls back to auto-detect when hint is "auto"', async () => {
     visitType: 'auto',
   })
   assert.equal(out.visitType, 'pnc_visit')
+})
+
+// -----------------------
+// applyMetadata — mirrors app.py:apply_metadata
+// -----------------------
+
+test('applyMetadata anc: name + years-age + mobile override', () => {
+  const form = { patient: { name: 'दीदी', age: 99 }, vitals: { bp_systolic: 120 } }
+  const out = applyMetadata(form, 'anc_visit', {
+    patient_name: 'सुनीता', patient_age: '24', age_unit: 'years',
+    patient_mobile: '9876543210',
+  })
+  assert.equal(out.patient.name, 'सुनीता')
+  assert.equal(out.patient.age, 24)
+  assert.equal(out.patient.mobile, '9876543210')
+  assert.equal(out.vitals.bp_systolic, 120) // unrelated field untouched
+})
+
+test('applyMetadata anc: months-unit does not write patient.age (ANC schema is years)', () => {
+  const form = { patient: { name: null, age: null } }
+  const out = applyMetadata(form, 'anc_visit', {
+    patient_name: 'X', patient_age: '6', age_unit: 'months',
+  })
+  assert.equal(out.patient.name, 'X')
+  assert.equal(out.patient.age, null)
+})
+
+test('applyMetadata child_health: years → age_months conversion + sex', () => {
+  const form = { child: { name: 'सोनम', age_months: null, sex: 'female' } }
+  const out = applyMetadata(form, 'child_health', {
+    patient_name: 'आरव', patient_age: '2', age_unit: 'years', patient_sex: 'male',
+  })
+  assert.equal(out.child.name, 'आरव')
+  assert.equal(out.child.age_months, 24)
+  assert.equal(out.child.sex, 'male')
+})
+
+test('applyMetadata child_health: months passed through', () => {
+  const form = { child: { name: null, age_months: null, sex: null } }
+  const out = applyMetadata(form, 'child_health', {
+    patient_name: 'आरव', patient_age: '14', age_unit: 'months', patient_sex: 'male',
+  })
+  assert.equal(out.child.age_months, 14)
+})
+
+test('applyMetadata pnc_visit: envelope-only, form untouched', () => {
+  const form = { patient_id: null, mother: { vitals: { bp_systolic: 120 } } }
+  const out = applyMetadata(form, 'pnc_visit', {
+    patient_name: 'सुनीता', patient_age: '24', age_unit: 'years',
+  })
+  assert.deepEqual(out, form) // schema has no patient block, no merge
+})
+
+test('applyMetadata null metadata: pass-through', () => {
+  const form = { patient: { name: 'X' } }
+  assert.equal(applyMetadata(form, 'anc_visit', null), form)
+})
+
+test('applyMetadata null form: pass-through', () => {
+  assert.equal(applyMetadata(null, 'anc_visit', { patient_name: 'X' }), null)
+})
+
+test('applyMetadata empty strings: ignored', () => {
+  const form = { patient: { name: 'preserved', age: 30 } }
+  const out = applyMetadata(form, 'anc_visit', {
+    patient_name: '', patient_age: '', patient_mobile: '',
+  })
+  assert.equal(out.patient.name, 'preserved')
+  assert.equal(out.patient.age, 30)
+})
+
+test('runPipeline returns metadata envelope and applies override', async () => {
+  const engine = mockEngine({
+    formText: '{"child":{"name":"सोनम","age_months":null,"sex":"female","weight_kg":null}}',
+  })
+  const out = await runPipeline({
+    engine,
+    transcript: 'बच्चे को 3 दिन से दस्त है',
+    visitType: 'child_health',
+    metadata: { patient_name: 'आरव', patient_age: '14', age_unit: 'months', patient_sex: 'male', asha_id: 'ASHA-1' },
+  })
+  assert.equal(out.form.child.name, 'आरव')
+  assert.equal(out.form.child.age_months, 14)
+  assert.equal(out.form.child.sex, 'male')
+  assert.equal(out.metadata.patient_name, 'आरव')
+  assert.equal(out.metadata.patient_age, 14) // string → number in envelope
+  assert.equal(out.metadata.asha_id, 'ASHA-1')
+})
+
+test('runPipeline metadata envelope is null when no metadata passed', async () => {
+  const engine = mockEngine({ formText: '{"patient":{}}' })
+  const out = await runPipeline({ engine, transcript: 'generic' })
+  assert.equal(out.metadata, null)
 })

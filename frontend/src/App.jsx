@@ -390,6 +390,7 @@ function App() {
         engine: Cactus,
         transcript: text,
         visitType: fieldOnDeviceVisitType === 'auto' ? null : fieldOnDeviceVisitType,
+        metadata,
       })
       setFieldOnDeviceState({
         loading: false,
