@@ -8,7 +8,7 @@ India's 1 million+ ASHA health workers conduct 50M+ maternal and child home visi
 
 ## What Sakhi does, in two sentences
 
-Sakhi converts Hindi home-visit conversations (voice on a shared health-center laptop, text on the ASHA's phone offline) into structured NHM/MCTS forms + a function-calling-powered danger-sign triage that flags referrals with verbatim utterance evidence. Same pipeline, same anti-hallucination validation, two deployment modes: Whisper-Large + Gemma 4 E4B via Ollama on a laptop for accuracy, and Gemma 4 E2B via Cactus SDK on an Android phone for offline resilience.
+Sakhi converts Hindi home-visit conversations (voice on a shared health-center workstation, text on the ASHA's phone offline) into structured NHM/MCTS forms + a function-calling-powered danger-sign triage that flags referrals with verbatim utterance evidence. Same pipeline, same anti-hallucination validation, two deployment modes: Whisper-Large + Gemma 4 E4B via Ollama on a workstation for accuracy, and Gemma 4 E2B via Cactus SDK on an Android phone for offline resilience.
 
 ![App screenshot placeholder — populated after Bareilly field trip](docs/screenshot-placeholder.png)
 
@@ -21,7 +21,7 @@ Sakhi converts Hindi home-visit conversations (voice on a shared health-center l
 | Hindi number / medical-term normalization | **133 / 133** | `scripts/test_asr.py` |
 | On-device JS pipeline port (engine-agnostic) | **72 / 72** | `cd frontend && node --test src/lib/__tests__/` |
 | False-alarm rate on routine visits | **0** | Strict evidence-grounding + 6-layer validation |
-| Laptop pipeline latency (audio → form) | ~15–25 s | RTX 5070 Ti, warm Ollama |
+| Workstation pipeline latency (audio → form) | ~15–25 s | RTX 5070 Ti, warm Ollama |
 | On-device pipeline latency (Hindi text → form) | ~5 min | OnePlus 11R / Snapdragon 8+ Gen 1, Gemma 4 E2B INT4 on Cactus |
 
 The 5-minute on-device figure is tested against the `ms2_0425` ANC preeclampsia training transcript: the model correctly extracts BP 150/95, TT complete, IFA = yes, verbatim Hindi symptoms, and flags `high_bp_with_symptoms` (urgent_care) with the Hindi quote `"आपका BP 150/95 आ रहा है"` and a "Refer Immediately" decision. A 5-minute wait is a net time save against the 15–20 min baseline of hand-filling paper forms plus travel to the PHC.
@@ -33,11 +33,11 @@ The 5-minute on-device figure is tested against the `ms2_0425` ANC preeclampsia 
 | **Health & Sciences** | A clinical-decision-support tool with explicit human-in-the-loop design, 6-layer anti-hallucination, strict-evidence danger-sign grounding, demographics entered as a typed header (the way every clinical EMR does it, so identifiers don't depend on ASR), and a real ASHA workflow (health-center mode + field mode with later sync) — not a research demo. |
 | **Ollama** | Native function calling via `tools=` parameter for `extract_form` + `flag_danger_sign` + `issue_referral` in a single inference pass, quantized Gemma 4 E4B Q4_K_M served on LAN to any phone on the same WiFi. One command (`python api.py`) starts the full stack. |
 | **Unsloth** | Honest reproducible LoRA pipeline in `scripts/train_unsloth.py`: data prep → LoRA train → GGUF export → Ollama registration → A/B eval vs base. Published artifacts: `RETRAIN_RESULTS.md`, `FIELD_COVERAGE_DIFF.md`. Fine-tune didn't beat base on pass-rate — we shipped the base and documented the fine-tune's specific wins (English schema-label normalization, visit-type-specific field recovery) rather than inflate the narrative. |
-| **Cactus** | Genuine on-device integration: custom Capacitor plugin bridging JS ↔ Cactus Kotlin SDK, JS pipeline port that drives either the Cactus engine or the laptop engine through a single `engine.complete()` contract, null-filled instance template prompting pattern that sidesteps E2B INT4's schema-echo failure mode, and a Developer-view toggle that shows raw per-stage model output for verifiable extraction. We investigated on-device voice-in via `cactusTranscribe` + Gemma; documented in the README why it's not shipped (Gemma 4 doesn't serve Cactus's ASR path, and off-the-shelf Whisper-Hindi INT4 has 27–70% WER on rural/clinical Hindi per arXiv 2512.10967 — shipping it would be demo-theater with clinical harm potential). |
+| **Cactus** | Genuine on-device integration: custom Capacitor plugin bridging JS ↔ Cactus Kotlin SDK, JS pipeline port that drives either the Cactus engine or the workstation engine through a single `engine.complete()` contract, null-filled instance template prompting pattern that sidesteps E2B INT4's schema-echo failure mode, and a Developer-view toggle that shows raw per-stage model output for verifiable extraction. We investigated on-device voice-in via `cactusTranscribe` + Gemma; documented in the README why it's not shipped (Gemma 4 doesn't serve Cactus's ASR path, and off-the-shelf Whisper-Hindi INT4 has 27–70% WER on rural/clinical Hindi per arXiv 2512.10967 — shipping it would be demo-theater with clinical harm potential). |
 
 ## Reproduce in under 10 minutes
 
-**Health-center mode (laptop only):**
+**Health-center mode (workstation only):**
 ```bash
 pip install -r requirements.txt && ollama pull gemma4:e4b
 cd frontend && npm install && npm run build && cd ..

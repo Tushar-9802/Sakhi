@@ -4,7 +4,24 @@ import Cactus from './lib/cactus'
 import { runPipeline } from './lib/pipeline'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`
+// API_BASE resolves in this order at module-load:
+//   1. localStorage 'sakhi_server_url' — user-entered LAN URL, set via the
+//      Server URL field below the status line. Required for the Capacitor APK,
+//      where window.location.hostname is 'localhost' (the WebView's own scheme)
+//      so the default expression would point at the phone's loopback.
+//   2. VITE_API_BASE_URL build-time env var — used by CI / pinned builds.
+//   3. `http://${window.location.hostname}:8000` — works for browsers visiting
+//      the dev server or the FastAPI-served bundle, where hostname resolves to
+//      the actual host. Does NOT work inside the Capacitor APK.
+function resolveApiBase() {
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('sakhi_server_url') : null
+    if (stored && stored.trim()) return stored.trim().replace(/\/+$/, '')
+  } catch (_) {}
+  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL
+  return `http://${window.location.hostname}:8000`
+}
+const API_BASE = resolveApiBase()
 const VISIT_OPTIONS = [
   { label: 'Auto-detect', value: 'auto' },
   { label: 'ANC Visit', value: 'anc_visit' },
@@ -155,6 +172,9 @@ function keyValueRows(data, prefix = '') {
 function App() {
   const [activeTab, setActiveTab] = useState('voice')
   const [health, setHealth] = useState('Checking backend...')
+  const [apiReachable, setApiReachable] = useState(null) // null = unknown, true/false after probe
+  const [serverUrlInput, setServerUrlInput] = useState(API_BASE)
+  const [serverUrlEditing, setServerUrlEditing] = useState(false)
   const [examples, setExamples] = useState([])
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('sakhi_history') || '[]') } catch { return [] }
@@ -223,13 +243,20 @@ function App() {
   const [cactusStatus, setCactusStatus] = useState(null)
   const [cactusBusy, setCactusBusy] = useState(false)
   const [cactusLog, setCactusLog] = useState([])
+  const [importProgress, setImportProgress] = useState(null) // { phase, pct, entries, totalEntries, bytes }
   const pushLog = (msg) => setCactusLog((prev) => [...prev.slice(-30), `[${new Date().toLocaleTimeString('en-IN')}] ${msg}`])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
       .then((r) => r.json())
-      .then((d) => setHealth(`API: ${d.status} · Model: ${d.model}`))
-      .catch(() => setHealth('API not reachable. Start FastAPI on :8000'))
+      .then((d) => {
+        setHealth(`API: ${d.status} · Model: ${d.model}`)
+        setApiReachable(true)
+      })
+      .catch(() => {
+        setHealth(`API not reachable at ${API_BASE}`)
+        setApiReachable(false)
+      })
 
     fetch(`${API_BASE}/api/examples`)
       .then((r) => r.json())
@@ -243,6 +270,17 @@ function App() {
       })
       .catch(() => {})
   }, [])
+
+  function saveServerUrl() {
+    const cleaned = (serverUrlInput || '').trim().replace(/\/+$/, '')
+    if (!cleaned) {
+      try { localStorage.removeItem('sakhi_server_url') } catch (_) {}
+    } else {
+      try { localStorage.setItem('sakhi_server_url', cleaned) } catch (_) {}
+    }
+    // Reload so every module-level API_BASE caller picks up the new value.
+    window.location.reload()
+  }
 
   useEffect(() => {
     return () => {
@@ -375,6 +413,40 @@ function App() {
       pushLog(`destroy failed: ${err.message || err}`)
     } finally {
       setCactusBusy(false)
+    }
+  }
+
+  async function cactusImport() {
+    setCactusBusy(true)
+    setImportProgress(null)
+    try {
+      pushLog('opening file picker...')
+      const r = await Cactus.importModelFromZip((evt) => {
+        setImportProgress(evt)
+        if (evt.phase === 'scanning_done') {
+          pushLog(`scanned: ${evt.totalEntries} entries — starting extract`)
+        } else if (evt.phase === 'extracting') {
+          const mb = (evt.bytes / (1024 * 1024)).toFixed(0)
+          pushLog(`extract ${evt.pct}% — ${evt.entries}/${evt.totalEntries} files (${mb} MB)`)
+        } else if (evt.phase === 'done') {
+          const mb = (evt.bytes / (1024 * 1024)).toFixed(0)
+          pushLog(`extract 100% — ${evt.entries} files (${mb} MB) written`)
+        }
+      })
+      if (r.cancelled) {
+        pushLog('import cancelled')
+        return
+      }
+      const mb = r.bytes ? (r.bytes / (1024 * 1024)).toFixed(0) : '?'
+      pushLog(`imported ${r.entries} files (${mb} MB) → ${r.modelPath}`)
+      // Re-probe so the UI sees the new model.
+      const s = await Cactus.isAvailable()
+      setCactusStatus(s)
+    } catch (err) {
+      pushLog(`import failed: ${err.message || err}`)
+    } finally {
+      setCactusBusy(false)
+      setImportProgress(null)
     }
   }
 
@@ -802,7 +874,48 @@ function App() {
         </div>
       </header>
 
-      <div className="status-line">{health}</div>
+      <div className={`status-line ${apiReachable === false ? 'status-line-error' : ''}`}>
+        {health}
+        {' · '}
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => setServerUrlEditing((v) => !v)}
+        >
+          {serverUrlEditing ? 'cancel' : 'change server'}
+        </button>
+      </div>
+      {serverUrlEditing && (
+        <div className="server-url-editor">
+          <label>
+            <span>Backend server URL</span>
+            <input
+              type="url"
+              value={serverUrlInput}
+              onChange={(e) => setServerUrlInput(e.target.value)}
+              placeholder="http://192.168.1.9:8000"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+            />
+          </label>
+          <div className="server-url-actions">
+            <button className="btn primary" onClick={saveServerUrl}>Save &amp; reload</button>
+            <button
+              className="btn secondary"
+              onClick={() => {
+                setServerUrlInput(`http://${window.location.hostname}:8000`)
+              }}
+            >
+              Reset
+            </button>
+          </div>
+          <p className="server-url-hint">
+            On the phone APK, set this to <code>http://&lt;PC-LAN-IP&gt;:8000</code> (e.g. <code>http://192.168.1.9:8000</code>).
+            Saved in this device's localStorage; survives reinstalls only if app data isn't cleared.
+          </p>
+        </div>
+      )}
 
       <div className="tabs">
         <button className={activeTab === 'voice' ? 'active' : ''} onClick={() => setActiveTab('voice')}>
@@ -1087,10 +1200,35 @@ function App() {
             </p>
             <div className="audio-tools">
               <button className="btn secondary" onClick={cactusCheck} disabled={cactusBusy}>Check Status</button>
+              <button className="btn secondary" onClick={cactusImport} disabled={cactusBusy}>Import model (.zip)</button>
               <button className="btn secondary" onClick={cactusLoad} disabled={cactusBusy || !cactusStatus?.modelPresent}>Load Model</button>
               <button className="btn primary" onClick={cactusTest} disabled={cactusBusy || !cactusStatus?.loaded}>Test Hindi</button>
               <button className="btn secondary" onClick={cactusUnload} disabled={cactusBusy || !cactusStatus?.loaded}>Unload</button>
             </div>
+            <p style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+              First-time setup: download the Gemma 4 E2B zip (~4.4 GB) to the
+              phone's Downloads folder (USB transfer or Drive download — not
+              WhatsApp; 2 GB cap), tap <strong>Import model</strong>, pick the
+              zip, wait for extraction (~5 min), then <strong>Load Model</strong>.
+            </p>
+            {importProgress && (
+              <div className="import-progress">
+                <div className="import-progress-label">
+                  {importProgress.phase === 'scanning_done' && `Scanned ${importProgress.totalEntries} entries — extracting...`}
+                  {importProgress.phase === 'extracting' && (
+                    <>
+                      Extracting {importProgress.pct}% · {importProgress.entries}/{importProgress.totalEntries} files · {(importProgress.bytes / (1024 * 1024)).toFixed(0)} MB
+                    </>
+                  )}
+                  {importProgress.phase === 'done' && `Extracted ${importProgress.entries} files — ${(importProgress.bytes / (1024 * 1024)).toFixed(0)} MB`}
+                </div>
+                <progress
+                  className="import-progress-bar"
+                  value={importProgress.pct || 0}
+                  max={100}
+                />
+              </div>
+            )}
             {cactusStatus && (
               <div style={{ fontSize: 13, color: '#374151', marginTop: 8 }}>
                 <strong>Status:</strong> available={String(cactusStatus.available)} ·

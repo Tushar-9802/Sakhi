@@ -4,7 +4,7 @@ Offline-first tool that converts Hindi home visit conversations into structured 
 
 **Competition:** [Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon) ($200K prize pool)
 **Tracks:** Health & Sciences | Ollama | Unsloth | Cactus (Android APK)
-**Partner frameworks:** [Gemma 4](https://blog.google/technology/developers/gemma-3/) (E2B + E4B), [Cactus SDK](https://github.com/cactus-compute/cactus) (on-device Android), [Ollama](https://ollama.ai) (laptop GPU), [Unsloth](https://unsloth.ai) (LoRA fine-tune), [Whisper](https://github.com/openai/whisper) (Hindi ASR via CTranslate2)
+**Partner frameworks:** [Gemma 4](https://blog.google/technology/developers/gemma-3/) (E2B + E4B), [Cactus SDK](https://github.com/cactus-compute/cactus) (on-device Android), [Ollama](https://ollama.ai) (workstation GPU), [Unsloth](https://unsloth.ai) (LoRA fine-tune), [Whisper](https://github.com/openai/whisper) (Hindi ASR via CTranslate2)
 
 ## Problem
 
@@ -14,13 +14,13 @@ India's ASHA workers conduct 50M+ maternal/child health home visits per year acr
 
 One product, one extraction schema, one anti-hallucination pipeline — deployed two ways to match ASHA working reality:
 
-- **Health-center mode (laptop + E4B via Ollama)** — sub-center / PHC / camp with a shared laptop. Phone records Hindi audio → LAN upload → Whisper ASR + Gemma 4 E4B on GPU with native function calling → structured JSON back to phone. Fast (~15 s) and accurate. This is the primary voice-to-form path.
+- **Health-center mode (workstation + E4B via Ollama)** — sub-center / PHC / camp with a shared workstation. Phone records Hindi audio → LAN upload → Whisper ASR + Gemma 4 E4B on GPU with native function calling → structured JSON back to phone. Fast (~15 s) and accurate. This is the primary voice-to-form path.
 - **Field mode (phone)** has two offline sub-paths:
-  - **Record now, sync later** — ASHA records audio during home visits; chunks persist to IndexedDB every 5 s (crash-safe). When the phone is back on health-center WiFi, the queued recordings post to the laptop for full Whisper + E4B processing. This is the honest voice path — no on-device ASR attempted.
-  - **Type a note for instant on-device extraction** — for when the ASHA wants structured output *right now* without network. A short Hindi note in a textarea runs through the full pipeline (normalize → detect visit type → extract form → detect danger signs) entirely on-device via Gemma 4 E2B INT4 on the Cactus SDK. Same schema, same validation as the laptop path. Pipeline latency is ≈ 5 min on a Snapdragon 8+ Gen 1 phone. This is acceptable against the clinical baseline: the status quo is an ASHA hand-filling the same form from memory (15–20 min), carrying it to the PHC (another walk), then waiting for a clinician to read and act on it (hours to days). A 5-minute wait for on-device structured extraction + flagged danger signs is a net time save, not a UX compromise — and it works with zero network, zero shared infrastructure.
+  - **Record now, sync later** — ASHA records audio during home visits; chunks persist to IndexedDB every 5 s (crash-safe). When the phone is back on health-center WiFi, the queued recordings post to the workstation for full Whisper + E4B processing. This is the honest voice path — no on-device ASR attempted.
+  - **Type a note for instant on-device extraction** — for when the ASHA wants structured output *right now* without network. A short Hindi note in a textarea runs through the full pipeline (normalize → detect visit type → extract form → detect danger signs) entirely on-device via Gemma 4 E2B INT4 on the Cactus SDK. Same schema, same validation as the workstation path. Pipeline latency is ≈ 5 min on a Snapdragon 8+ Gen 1 phone. This is acceptable against the clinical baseline: the status quo is an ASHA hand-filling the same form from memory (15–20 min), carrying it to the PHC (another walk), then waiting for a clinician to read and act on it (hours to days). A 5-minute wait for on-device structured extraction + flagged danger signs is a net time save, not a UX compromise — and it works with zero network, zero shared infrastructure.
 
 ```
-Laptop path:
+Workstation path:
 [Hindi Audio] → Whisper ASR → Hindi Normalization → Gemma 4 E4B (function calling)
                                                       ├── extract_form()      → structured MCTS JSON
                                                       ├── flag_danger_sign()  → per-sign with utterance evidence
@@ -34,7 +34,7 @@ On-device path (text-in):
 
 ### Why not voice-to-form on-device too?
 
-We looked into it — the honest answer is it doesn't work well enough yet for clinical Hindi. Cactus's transcribe API supports Whisper / Moonshine / Parakeet only (Gemma 4's audio conformer is for voice understanding in multimodal chat, not dedicated ASR). Cactus ships multilingual Whisper INT4 weights, but no Hindi-specific checkpoint — and published evidence (arXiv 2512.10967, Vistaar/Gramvaani) shows off-the-shelf Whisper on spontaneous rural Hindi hits 27% WER at best and 70%+ on clinical content, with a deletion-dominant error profile that silently drops numbers and symptoms. For an ASHA decision-support tool where a missed BP reading is a clinical harm, we chose to *not* ship an unreliable on-device voice path. Record-and-sync with Whisper-Large on the laptop keeps voice-in honest; the on-device LLM does what Gemma 4 is actually good at — Hindi text understanding.
+We looked into it — the honest answer is it doesn't work well enough yet for clinical Hindi. Cactus's transcribe API supports Whisper / Moonshine / Parakeet only (Gemma 4's audio conformer is for voice understanding in multimodal chat, not dedicated ASR). Cactus ships multilingual Whisper INT4 weights, but no Hindi-specific checkpoint — and published evidence (arXiv 2512.10967, Vistaar/Gramvaani) shows off-the-shelf Whisper on spontaneous rural Hindi hits 27% WER at best and 70%+ on clinical content, with a deletion-dominant error profile that silently drops numbers and symptoms. For an ASHA decision-support tool where a missed BP reading is a clinical harm, we chose to *not* ship an unreliable on-device voice path. Record-and-sync with Whisper-Large on the workstation keeps voice-in honest; the on-device LLM does what Gemma 4 is actually good at — Hindi text understanding.
 
 ## Function Calling
 
@@ -54,12 +54,12 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 
 | Component | Model | Size | Role | Deployment |
 |-----------|-------|------|------|------------|
-| ASR (laptop path only) | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 | Laptop |
+| ASR (workstation path only) | collabora/whisper-large-v2-hindi | ~1.5 GB | Hindi speech → text via faster-whisper/CTranslate2 | Workstation |
 | Normalization | src/hindi_normalize.py | — | Hindi number words → digits, medical term mapping | Shared (Python server-side; JS port for phone) |
-| Clinical Extraction (health-center mode, audio-in) | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral | Laptop (GPU) |
+| Clinical Extraction (health-center mode, audio-in) | Gemma 4 E4B (Q4_K_M via Ollama) | ~5 GB | Function calling: form extraction + danger signs + referral | Workstation (GPU) |
 | Clinical Extraction (field mode, text-in) | Gemma 4 E2B (INT4 via Cactus SDK) | ~4.4 GB download / ~6.3 GB on-device extracted (multimodal package includes audio + vision encoders that the text-in path does not use) | Same extraction schema, plain-JSON mode (E2B INT4 does not reliably emit OpenAI-style `tool_calls`) | Android (ARM, Snapdragon 7+ Gen 1 or newer, 8 GB RAM, ~7 GB free storage for the one-time install) |
 
-**Patient demographics enter as a header, not from the audio.** Every clinical EMR works this way: identifiers typed once at intake, the conversation handled separately. The ASHA fills name / age / sex / mobile / ASHA-ID / visit-date in the header above the record button, and the LLM only extracts what was *said* during the visit — symptoms, vitals, counselling, next-visit date. This avoids a failure mode we hit in real-voice testing: Whisper-Hindi sometimes mishears patient names as different Hindi words, and a downstream LLM has no prior on what the name should be. Same merge logic runs on all three paths — `apply_metadata` in `app.py` for laptop audio and text, mirrored as a pure JS function in `pipeline.js` for on-device Cactus extraction — so server and phone produce identical envelopes for the same input. ANC fills `patient.{name, age, mobile}`; child_health fills `child.{name, age_months, sex}` with year→month conversion; PNC and delivery have no patient sub-object in their form, so the metadata travels in the response envelope only. `asha_id` is sticky across sessions via `localStorage`. For Field-mode recordings, the header is captured at record-start so later edits don't pollute earlier queue entries.
+**Patient demographics enter as a header, not from the audio.** Every clinical EMR works this way: identifiers typed once at intake, the conversation handled separately. The ASHA fills name / age / sex / mobile / ASHA-ID / visit-date in the header above the record button, and the LLM only extracts what was *said* during the visit — symptoms, vitals, counselling, next-visit date. This avoids a failure mode we hit in real-voice testing: Whisper-Hindi sometimes mishears patient names as different Hindi words, and a downstream LLM has no prior on what the name should be. Same merge logic runs on all three paths — `apply_metadata` in `app.py` for workstation audio and text, mirrored as a pure JS function in `pipeline.js` for on-device Cactus extraction — so server and phone produce identical envelopes for the same input. ANC fills `patient.{name, age, mobile}`; child_health fills `child.{name, age_months, sex}` with year→month conversion; PNC and delivery have no patient sub-object in their form, so the metadata travels in the response envelope only. `asha_id` is sticky across sessions via `localStorage`. For Field-mode recordings, the header is captured at record-start so later edits don't pollute earlier queue entries.
 
 **Hindi number normalization:** Algorithmic parser covering all 0–999 Hindi number words with Whisper misspelling variants. Handles compound medical values: "एक सौ दस बटा सत्तर" → "110/70", "ग्यारह दशमलव पाँच" → "11.5", "तीन किलो दो सौ ग्राम" → "3.2 kg".
 
@@ -88,11 +88,11 @@ Sakhi is a decision-support tool, not a diagnostic system. All outputs require h
 ## Deployment Model
 
 ```
-Health Center (laptop, RTX GPU)              Field (Android phone)
+Health Center (workstation, RTX GPU)              Field (Android phone)
 ┌────────────────────────────────────┐       ┌──────────────────────────────────┐
 │  python api.py  →  :8000           │◄─────►│  Native APK (Capacitor + React)  │
 │  ├── /api/*   — pipeline endpoints │  WiFi │  ├── Health-center mode:         │
-│  └── /        — React UI (dist/)   │  LAN  │  │   POST audio to laptop :8000  │
+│  └── /        — React UI (dist/)   │  LAN  │  │   POST audio to workstation :8000  │
 │                                    │       │  └── Field mode (offline):       │
 │  Whisper ASR (CTranslate2)         │       │      (a) record + IDB queue +    │
 │  Gemma 4 E4B (Ollama)              │       │          later sync to :8000     │
@@ -104,9 +104,9 @@ Health Center (laptop, RTX GPU)              Field (Android phone)
 
 **Three access points, same backend schema:**
 
-1. **Laptop browser** — ANM/medical officer at the health center opens `http://localhost:8000` (or `http://<LAN-IP>:8000` from any laptop on the WiFi). FastAPI serves the built React UI at `/` and the pipeline endpoints at `/api/*`. One command (`python api.py`) starts everything.
-2. **Phone, health-center mode** — APK records and posts to laptop's `:8000` over WiFi. Laptop does Whisper + E4B (fast, accurate). Best extraction quality available.
-3. **Phone, field mode** — APK offers two offline paths. **(a)** Record audio during home visits — chunks stored crash-safely in IndexedDB every 5 s. Queued recordings sync to the health-center laptop when back on WiFi for full Whisper + E4B processing. **(b)** Type a short Hindi note in the "on-device text → form" card; the full extraction + danger-sign pipeline runs on the phone via Gemma 4 E2B on Cactus SDK. No network required. Total on-device pipeline latency ≈ 5 min on Snapdragon 8+ Gen 1 — suited for "tap and wait" use, not real-time.
+1. **Workstation browser** — ANM/medical officer at the health center opens `http://localhost:8000` (or `http://<LAN-IP>:8000` from any workstation on the WiFi). FastAPI serves the built React UI at `/` and the pipeline endpoints at `/api/*`. One command (`python api.py`) starts everything.
+2. **Phone, health-center mode** — APK records and posts to workstation's `:8000` over WiFi. Workstation does Whisper + E4B (fast, accurate). Best extraction quality available.
+3. **Phone, field mode** — APK offers two offline paths. **(a)** Record audio during home visits — chunks stored crash-safely in IndexedDB every 5 s. Queued recordings sync to the health-center workstation when back on WiFi for full Whisper + E4B processing. **(b)** Type a short Hindi note in the "on-device text → form" card; the full extraction + danger-sign pipeline runs on the phone via Gemma 4 E2B on Cactus SDK. No network required. Total on-device pipeline latency ≈ 5 min on Snapdragon 8+ Gen 1 — suited for "tap and wait" use, not real-time.
 
 **Crash-safe recording (Field Mode):** audio chunks are persisted to IndexedDB every 5 seconds during a recording. If the browser tab closes, the phone locks, or the app is killed mid-visit, the chunks survive — on reopen, an orange recovery banner offers to reassemble the partial recording.
 
@@ -160,28 +160,28 @@ One React + Vite codebase, shipped as both a browser UI (served by FastAPI at `/
 
 | Tab | Purpose |
 |-----|---------|
-| Voice to Form | Record or upload audio, real-time SSE pipeline progress (laptop path). Patient & Visit Info header at the top (name / age / sex / ASHA-ID / visit-date) is posted alongside the audio so demographics don't depend on ASR. |
-| Text to Form | Paste transcript, extract structured form with example loader (laptop path) |
+| Voice to Form | Record or upload audio, real-time SSE pipeline progress (workstation path). Patient & Visit Info header at the top (name / age / sex / ASHA-ID / visit-date) is posted alongside the audio so demographics don't depend on ASR. |
+| Text to Form | Paste transcript, extract structured form with example loader (workstation path) |
 | Field Mode | Offline-first: crash-safe audio recording queue (IndexedDB every 5 s) for later sync + **on-device text→form card** that runs the full pipeline through Gemma 4 E2B on Cactus SDK + **On-Device Probe** card for loading/health-checking the Cactus model. Same Patient & Visit Info header as the Voice tab; header values are snapshotted at record-start so later edits don't contaminate earlier queue entries. A "Developer view" toggle shows raw per-stage model output for verification. |
 | About & Impact | Project context, ASHA program statistics |
 | History | Past extractions with JSON/CSV export |
 
 **JS pipeline port** (`frontend/src/lib/`) — the Python extraction pipeline (Hindi normalization, visit-type detection, form/danger prompts, 6-layer validation, demographics-header merge) has a full JS port so the phone can run the same logic against the on-device Cactus engine, engine-agnostic by design. 72/72 unit tests pass under `node --test`.
 
-**On-device prompt design note:** E4B via Ollama handles a raw JSON Schema in the form-extraction prompt cleanly. E2B INT4 on Cactus doesn't — it echoes schema metadata (`$schema`, `title`, `description`, `type`) back as output data. The JS port sends a **null-filled instance template** instead (just the field shape with all values as null), and the model's job is to fill in the slots where the transcript says something. Similarly, danger-sign extraction on-device uses plain JSON (E2B doesn't reliably emit OpenAI-style `tool_calls` in Cactus's parseable shape). The laptop E4B path keeps native function calling.
+**On-device prompt design note:** E4B via Ollama handles a raw JSON Schema in the form-extraction prompt cleanly. E2B INT4 on Cactus doesn't — it echoes schema metadata (`$schema`, `title`, `description`, `type`) back as output data. The JS port sends a **null-filled instance template** instead (just the field shape with all values as null), and the model's job is to fill in the slots where the transcript says something. Similarly, danger-sign extraction on-device uses plain JSON (E2B doesn't reliably emit OpenAI-style `tool_calls` in Cactus's parseable shape). The workstation E4B path keeps native function calling.
 
 ## Quick Start
 
 ```bash
 # Prerequisites: Python 3.11+, Node 18+, Ollama, CUDA GPU (16GB VRAM recommended)
 
-# ── Health-center deployment (laptop, unified UI + API) ──
+# ── Health-center deployment (workstation, unified UI + API) ──
 pip install -r requirements.txt
 ollama pull gemma4:e4b
 cd frontend && npm install && npm run build && cd ..
 python api.py
 # Browser: http://localhost:8000  (React UI)
-# Phone APK (on same WiFi): posts to http://<laptop-LAN-IP>:8000
+# Phone APK (on same WiFi): posts to http://<workstation-LAN-IP>:8000
 
 # ── Frontend dev mode (hot-reload) ──
 cd frontend && npm run dev           # Vite on :5173, proxies /api to :8000
@@ -189,7 +189,7 @@ cd frontend && npm run dev           # Vite on :5173, proxies /api to :8000
 # ── Android APK (Capacitor, field-deployable) ──
 # Prerequisites: JDK 21 (Temurin), Android Studio with SDK
 cd frontend
-VITE_API_BASE_URL="http://<laptop-LAN-IP>:8000" npm run build
+VITE_API_BASE_URL="http://<workstation-LAN-IP>:8000" npm run build
 npx cap sync android
 cd android && ./gradlew assembleDebug
 # APK at: frontend/android/app/build/outputs/apk/debug/app-debug.apk
