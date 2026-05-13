@@ -175,21 +175,22 @@ async function simulateImport(onProgress) {
   const TOTAL_BYTES = 4679429616
   await sleep(150) // SAF picker open
   if (typeof onProgress === 'function') {
-    onProgress({ phase: 'scanning_done', totalEntries: TOTAL_ENTRIES })
+    onProgress({ phase: 'scanning_done', totalBytes: TOTAL_BYTES })
   }
 
-  for (let bucket = 1; bucket <= 10; bucket++) {
-    await sleep(500) // 5 s total for all 10 buckets
-    const pct = bucket * 10
+  // 100 events at ~50 ms each = 5 s total. Matches the Kotlin path's 1%
+  // bucket cadence so the bar renders identically in browser vs phone.
+  for (let pct = 1; pct <= 99; pct++) {
+    await sleep(50)
     const entries = Math.round((TOTAL_ENTRIES * pct) / 100)
     const bytes = Math.round((TOTAL_BYTES * pct) / 100)
     if (typeof onProgress === 'function') {
-      onProgress({ phase: 'extracting', entries, totalEntries: TOTAL_ENTRIES, bytes, pct })
+      onProgress({ phase: 'extracting', entries, bytes, totalBytes: TOTAL_BYTES, pct })
     }
   }
 
   if (typeof onProgress === 'function') {
-    onProgress({ phase: 'done', entries: TOTAL_ENTRIES, totalEntries: TOTAL_ENTRIES, bytes: TOTAL_BYTES, pct: 100 })
+    onProgress({ phase: 'done', entries: TOTAL_ENTRIES, bytes: TOTAL_BYTES, totalBytes: TOTAL_BYTES, pct: 100 })
   }
   _simHasModel = true
   return {

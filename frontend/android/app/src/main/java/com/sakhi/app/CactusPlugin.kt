@@ -313,81 +313,99 @@ class CactusPlugin : Plugin() {
         }
     }
 
+    private fun queryZipSize(uri: Uri): Long {
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        } catch (_: Exception) { 0L }
+    }
+
     private data class ExtractReport(val modelName: String, val modelPath: String, val entries: Int, val bytes: Long)
 
     /**
-     * Two-pass extraction. First pass reads entry NAMES only to determine
-     * whether the zip is "wrapped" (all entries share a common top-level
-     * directory — common when zipping a folder via Finder/Explorer) or
-     * "flat" (entries at the root — what huggingface.co/Cactus-Compute
-     * ships for gemma-4-e2b-it-int4.zip). Second pass writes entries
-     * stripped of any common top-level.
+     * Single-pass extraction. The earlier two-pass version had to inflate the
+     * entire compressed zip just to count entries / detect wrapper folder
+     * before any progress event could fire — a 4-minute silent prefix for a
+     * 4.68 GB zip, because ZipInputStream.nextEntry() inflates entry data to
+     * find the next header (no random access without ZipFile, which would
+     * need a local temp copy).
+     *
+     * Now: derive the model dir name from the zip filename, skip wrapper
+     * detection (candidateModelPaths() scans one level of nesting, so a
+     * wrapped zip still loads — files just end up one dir deeper), and use
+     * the content URI's SIZE column (compressed bytes) as the progress
+     * denominator. Binary weight files compress at ~1:1 so
+     * uncompressed-bytes-written tracks compressed total closely enough for
+     * a smooth bar.
+     *
+     * Progress events fire on every 1% bucket crossover with a 500 ms
+     * heartbeat fallback so a slow single-file write (the big tail weights)
+     * still shows liveness via the file/byte counters.
      */
     private fun extractZipToModels(uri: Uri, displayName: String): ExtractReport {
         val cr = context.contentResolver
 
-        // ── First pass: peek at entry names to detect wrapper folder + count ──
-        var topLevel: String? = null
-        var consistent = true
-        var totalEntries = 0
-        cr.openInputStream(uri)?.use { input ->
-            ZipInputStream(input).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) totalEntries++
-                    val name = entry.name
-                    val slash = name.indexOf('/')
-                    val prefix = if (slash >= 0) name.substring(0, slash) else ""
-                    if (prefix.isEmpty()) {
-                        consistent = false
-                    } else if (topLevel == null) {
-                        topLevel = prefix
-                    } else if (topLevel != prefix) {
-                        consistent = false
-                    }
-                    entry = zis.nextEntry
-                }
-            }
-        } ?: throw RuntimeException("cannot open zip input stream")
-
-        if (totalEntries == 0) throw RuntimeException("zip has no entries")
-
-        notifyListeners(
-            "importProgress",
-            JSObject()
-                .put("phase", "scanning_done")
-                .put("totalEntries", totalEntries),
-        )
-
-        val wrappedName = if (consistent && topLevel != null) topLevel else null
-        val flatFallbackName = displayName.removeSuffix(".zip").removeSuffix(".ZIP").ifBlank { "imported-model" }
+        val totalCompressedBytes = queryZipSize(uri).coerceAtLeast(1L)
+        val modelName = displayName.removeSuffix(".zip").removeSuffix(".ZIP").ifBlank { "imported-model" }
             // Sanitize: Cactus paths are passed to native code — keep ASCII-safe.
             .replace(Regex("[^A-Za-z0-9._-]"), "-")
-        val modelName = wrappedName ?: flatFallbackName
-
         val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
+
+        // One-model-at-a-time eviction: before extracting a new model, remove
+        // any sibling subdirs in files/models/. A model is ~6 GB; phones don't
+        // have headroom for accumulation. Same-named import (re-extract) hits
+        // the deleteRecursively below, not this loop.
+        modelsDir.listFiles()?.forEach { sibling ->
+            if (sibling.isDirectory && sibling.name != modelName) {
+                val freed = sibling.walkBottomUp().sumOf { if (it.isFile) it.length() else 0L }
+                Log.d(TAG, "evicting stale model: ${sibling.name} (${freed / (1024 * 1024)} MB)")
+                sibling.deleteRecursively()
+            }
+        }
+
         val target = File(modelsDir, modelName)
         if (target.exists()) target.deleteRecursively()
         target.mkdirs()
         val targetCanonical = target.canonicalPath + File.separator
 
-        // ── Second pass: extract, emitting progress at every 10% bucket ──
+        notifyListeners(
+            "importProgress",
+            JSObject()
+                .put("phase", "scanning_done")
+                .put("totalBytes", totalCompressedBytes),
+        )
+
         var entries = 0
         var totalBytes = 0L
-        var lastBucket = -1
+        var lastPct = -1
+        var lastEmitMs = 0L
+        val emit: () -> Unit = {
+            val pct = ((totalBytes * 100) / totalCompressedBytes).toInt().coerceIn(0, 99)
+            val now = System.currentTimeMillis()
+            if (pct > lastPct || (now - lastEmitMs) >= 500L) {
+                lastPct = pct
+                lastEmitMs = now
+                notifyListeners(
+                    "importProgress",
+                    JSObject()
+                        .put("phase", "extracting")
+                        .put("entries", entries)
+                        .put("bytes", totalBytes)
+                        .put("totalBytes", totalCompressedBytes)
+                        .put("pct", pct),
+                )
+            }
+        }
+
         cr.openInputStream(uri)?.use { input ->
             ZipInputStream(input).use { zis ->
                 val buf = ByteArray(64 * 1024)
                 var entry = zis.nextEntry
                 while (entry != null) {
                     val rawName = entry.name
-                    val relPath = if (wrappedName != null) {
-                        val prefix = "$wrappedName/"
-                        if (rawName == wrappedName || rawName == prefix) "" else rawName.removePrefix(prefix)
-                    } else rawName
-
-                    if (relPath.isNotEmpty() && !entry.isDirectory) {
-                        val outFile = File(target, relPath).canonicalFile
+                    if (rawName.isNotEmpty() && !entry.isDirectory) {
+                        val outFile = File(target, rawName).canonicalFile
                         // Zip-slip guard.
                         if (!outFile.path.startsWith(targetCanonical)) {
                             throw SecurityException("entry tries to escape target: $rawName")
@@ -399,37 +417,29 @@ class CactusPlugin : Plugin() {
                                 fos.write(buf, 0, n)
                                 totalBytes += n.toLong()
                                 n = zis.read(buf)
+                                // Heartbeat inside a long-running entry so the
+                                // bar keeps moving when one big weight file
+                                // dominates an extract window.
+                                emit()
                             }
                         }
                         entries++
-
-                        val pct = (entries * 100) / totalEntries
-                        val bucket = pct / 10
-                        if (bucket > lastBucket) {
-                            lastBucket = bucket
-                            notifyListeners(
-                                "importProgress",
-                                JSObject()
-                                    .put("phase", "extracting")
-                                    .put("entries", entries)
-                                    .put("totalEntries", totalEntries)
-                                    .put("bytes", totalBytes)
-                                    .put("pct", pct),
-                            )
-                        }
+                        emit()
                     }
                     entry = zis.nextEntry
                 }
             }
-        }
+        } ?: throw RuntimeException("cannot open zip input stream")
+
+        if (entries == 0) throw RuntimeException("zip extracted no files")
 
         notifyListeners(
             "importProgress",
             JSObject()
                 .put("phase", "done")
                 .put("entries", entries)
-                .put("totalEntries", totalEntries)
                 .put("bytes", totalBytes)
+                .put("totalBytes", totalCompressedBytes)
                 .put("pct", 100),
         )
 

@@ -421,15 +421,22 @@ function App() {
     setImportProgress(null)
     try {
       pushLog('opening file picker...')
+      // We log only on every 5% crossover (or on terminal events) to keep
+      // the log card readable — the progress bar itself updates per 1%.
+      let lastLogBucket = -1
       const r = await Cactus.importModelFromZip((evt) => {
         setImportProgress(evt)
+        const mb = evt.bytes != null ? (evt.bytes / (1024 * 1024)).toFixed(0) : '?'
         if (evt.phase === 'scanning_done') {
-          pushLog(`scanned: ${evt.totalEntries} entries — starting extract`)
+          const totalMb = evt.totalBytes ? (evt.totalBytes / (1024 * 1024)).toFixed(0) : '?'
+          pushLog(`starting extract (zip is ${totalMb} MB)`)
         } else if (evt.phase === 'extracting') {
-          const mb = (evt.bytes / (1024 * 1024)).toFixed(0)
-          pushLog(`extract ${evt.pct}% — ${evt.entries}/${evt.totalEntries} files (${mb} MB)`)
+          const bucket = Math.floor((evt.pct || 0) / 5)
+          if (bucket > lastLogBucket) {
+            lastLogBucket = bucket
+            pushLog(`extract ${evt.pct}% — ${evt.entries} files, ${mb} MB`)
+          }
         } else if (evt.phase === 'done') {
-          const mb = (evt.bytes / (1024 * 1024)).toFixed(0)
           pushLog(`extract 100% — ${evt.entries} files (${mb} MB) written`)
         }
       })

@@ -33,7 +33,7 @@ The 5-minute on-device figure is tested against the `ms2_0425` ANC preeclampsia 
 | **Health & Sciences** | A clinical-decision-support tool with explicit human-in-the-loop design, 6-layer anti-hallucination, strict-evidence danger-sign grounding, demographics entered as a typed header (the way every clinical EMR does it, so identifiers don't depend on ASR), and a real ASHA workflow (health-center mode + field mode with later sync) — not a research demo. |
 | **Ollama** | Native function calling via `tools=` parameter for `extract_form` + `flag_danger_sign` + `issue_referral` in a single inference pass, quantized Gemma 4 E4B Q4_K_M served on LAN to any phone on the same WiFi. One command (`python api.py`) starts the full stack. |
 | **Unsloth** | Honest reproducible LoRA pipeline in `scripts/train_unsloth.py`: data prep → LoRA train → GGUF export → Ollama registration → A/B eval vs base. Published artifacts: `RETRAIN_RESULTS.md`, `FIELD_COVERAGE_DIFF.md`. Fine-tune didn't beat base on pass-rate — we shipped the base and documented the fine-tune's specific wins (English schema-label normalization, visit-type-specific field recovery) rather than inflate the narrative. |
-| **Cactus** | Genuine on-device integration: custom Capacitor plugin bridging JS ↔ Cactus Kotlin SDK, JS pipeline port that drives either the Cactus engine or the workstation engine through a single `engine.complete()` contract, null-filled instance template prompting pattern that sidesteps E2B INT4's schema-echo failure mode, and a Developer-view toggle that shows raw per-stage model output for verifiable extraction. We investigated on-device voice-in via `cactusTranscribe` + Gemma; documented in the README why it's not shipped (Gemma 4 doesn't serve Cactus's ASR path, and off-the-shelf Whisper-Hindi INT4 has 27–70% WER on rural/clinical Hindi per arXiv 2512.10967 — shipping it would be demo-theater with clinical harm potential). |
+| **Cactus** | Genuine on-device integration: custom Capacitor plugin bridging JS ↔ Cactus Kotlin SDK, JS pipeline port that drives either the Cactus engine or the workstation engine through a single `engine.complete()` contract, null-filled instance template prompting pattern that sidesteps E2B INT4's schema-echo failure mode, in-app SAF zip-import so a judge can install the 4.4 GB model without adb or developer tooling (single-pass extract with 1%/heartbeat progress events; auto-evicts stale model dirs on re-import), and a Developer-view toggle that shows raw per-stage model output for verifiable extraction. We investigated on-device voice-in via `cactusTranscribe` + Gemma; documented in the README why it's not shipped (Gemma 4 doesn't serve Cactus's ASR path, and off-the-shelf Whisper-Hindi INT4 has 27–70% WER on rural/clinical Hindi per arXiv 2512.10967 — shipping it would be demo-theater with clinical harm potential). |
 
 ## Reproduce in under 10 minutes
 
@@ -45,16 +45,27 @@ python api.py        # browser: http://localhost:8000
 ```
 
 **Field mode (phone + Cactus):**
+
+> **We do not redistribute the Cactus-Compute model** — it is gated under a custom Cactus license. Reviewers verifying the Cactus track follow the documented path below. Most reviewers can verify the engineering claims via the workstation path above without ever installing on-device; the 3-minute demo video shows the full on-device flow on a real phone.
+
 ```bash
+# Build + install the APK once. After this the model install is in-app, no adb.
 cd frontend && npm run build && npx cap sync android && \
   cd android && ./gradlew assembleDebug && \
   adb install -r app/build/outputs/apk/debug/app-debug.apk
-# Phone must be debug-authorized. Then:
-export HF_TOKEN=hf_...              # after accepting terms at
-                                    # huggingface.co/Cactus-Compute/gemma-4-E2B-it
-bash scripts/setup_cactus_model.sh  # downloads + pushes model; ~5 min on WiFi
-# Open Sakhi on phone → Field Mode → On-Device Probe → Load Model
-# Then scroll up to "On-device text → form" card, paste Hindi, process.
+
+# Model install — primary path, no developer tooling needed:
+#   1. Accept terms at huggingface.co/Cactus-Compute/gemma-4-E2B-it
+#   2. Download gemma-4-e2b-it-int4.zip (~4.4 GB) to the PHONE'S Downloads
+#      folder (USB MTP from PC, OTG drive, or direct Drive download to local).
+#   3. Open Sakhi → Field Mode → On-Device Probe → Import model (.zip)
+#      → pick the zip. Progress bar fills in ~3-5 min.
+#   4. Tap Load Model → Test Hindi.
+#
+# Re-imports auto-evict the previous model — one model on disk at a time.
+
+# Developer alternative (adb-based, no manual file picking):
+#   export HF_TOKEN=hf_... && bash scripts/setup_cactus_model.sh
 ```
 
 A sample Hindi transcript ready to paste is at `data/processed/train.jsonl` (line 1 = ANC preeclampsia case) or in the main README.

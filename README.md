@@ -71,6 +71,22 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 5. Deduplication across overlapping danger signs
 6. Form validation — strips invented names (दीदी/बहन patterns), default ages, phantom lab results; range checks on BP (60–250/30–150), Hb (3–20), weight (1–200), gestational weeks (1–45)
 
+## Reproducing the demo
+
+Two reproduction paths, calibrated to how much friction the reviewer wants to accept.
+
+**Path 1 — workstation, ~5 minutes (recommended for reviewers).** Runs the full pipeline (Whisper + Gemma 4 E4B via Ollama) on any CUDA workstation with ≥16 GB VRAM. No phone needed; same extraction code, same anti-hallucination validation, same form output. `pip install -r requirements.txt && ollama pull gemma4:e4b && python api.py` then open `http://localhost:8000`. Voice-to-form, text-to-form, and queue-and-sync flows all run here. This is sufficient to verify our engineering claims (function calling, normalization, 6-layer validation, schema correctness).
+
+**Path 2 — on-device on Android, ~20-25 minutes total (for verifying the Cactus track).** Requires accepting the Cactus-Compute model license. Steps:
+1. Accept terms at [huggingface.co/Cactus-Compute/gemma-4-E2B-it](https://huggingface.co/Cactus-Compute/gemma-4-E2B-it) (1 min, free HF account).
+2. Download `gemma-4-e2b-it-int4.zip` (~4.4 GB) from that page.
+3. Build + install the APK (`./gradlew assembleDebug && adb install -r ...`), or take the prebuilt APK from the GitHub Release.
+4. Transfer the zip to the phone's `Downloads/` folder via USB MTP or USB-OTG drive. (WhatsApp won't work — 2 GB cap. Drive download to phone is fine if the file lands locally rather than streaming.)
+5. Open Sakhi → Field Mode → On-Device Probe → **Import model (.zip)** → pick the zip from the system file picker. Wait ~3-5 minutes for extraction (progress bar + log card show live file count and MB written). Re-imports auto-evict the previous model — no manual cleanup, no risk of 12 GB accumulation.
+6. **Load Model** → **Test Hindi** to confirm inference works.
+
+**We do not redistribute the Cactus model.** It is gated under a custom Cactus-Compute license; hosting it on a public Drive link would violate that gating. The in-app SAF import flow exists precisely so reviewers who DO want to reproduce on-device can do so without us needing to host the weights ourselves and without needing developer mode or adb on their phone. The 3-minute demo video in the submission shows the full flow on a real phone, so the on-device claim can be verified without anyone needing to install the model themselves.
+
 ## Safety & Limitations
 
 Sakhi is a decision-support tool, not a diagnostic system. All outputs require human review.
@@ -195,12 +211,28 @@ cd android && ./gradlew assembleDebug
 # APK at: frontend/android/app/build/outputs/apk/debug/app-debug.apk
 
 # ── On-device Cactus model (for field mode) ──
-# One-command: accepts Cactus terms on HF, downloads INT4 weights, pushes
-# to app-private storage on a connected debuggable Android device.
-# Prerequisite: Sakhi APK must be installed on the phone first.
+# Two install paths. Pick one.
+#
+# (A) PRIMARY — judges / non-developers — no adb required:
+#   1. Accept the Cactus-Compute terms at huggingface.co/Cactus-Compute/gemma-4-E2B-it
+#   2. Download gemma-4-e2b-it-int4.zip (~4.4 GB) to a PC, then transfer to
+#      the phone's Downloads folder via USB cable (MTP) or USB-OTG drive.
+#      WhatsApp won't work (2 GB cap). Drive download to the phone also works
+#      but Drive's content provider streams lazily, so prefer a downloaded copy.
+#   3. Open Sakhi → Field Mode → On-Device Probe → Import model (.zip)
+#      → pick the zip from the system file picker.
+#   4. Wait ~3-5 min for extraction. Progress bar + log card show live
+#      file count and MB written.
+#   5. Tap Load Model → Test Hindi to confirm.
+#   Re-imports automatically wipe the previous model dir — no manual cleanup,
+#   no risk of accumulating multiple 6 GB models on the phone.
+#
+# (B) DEVELOPER — adb-based, scripted, faster on the same WiFi:
 export HF_TOKEN=hf_...            # read token, repo must be accepted on HF UI
 bash scripts/setup_cactus_model.sh
-# Full prerequisites + troubleshooting documented inside the script header.
+# Requires: adb on PATH, phone in USB debug mode authorised for this host,
+# debuggable Sakhi APK installed (run-as-able). Full prerequisites +
+# troubleshooting documented inside the script header.
 
 # Tests
 python scripts/test_ollama_quality.py    # Text extraction (base 15/15, sakhi 14/15)
