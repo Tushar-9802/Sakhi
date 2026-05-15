@@ -75,7 +75,7 @@ The pipeline uses a hybrid design: form extraction via `format="json"` (proven p
 
 Two reproduction paths, calibrated to how much friction the reviewer wants to accept.
 
-**Path 1 — workstation, ~5 minutes (recommended for reviewers).** Runs the full pipeline (Whisper + Gemma 4 E4B via Ollama) on any CUDA workstation with ≥16 GB VRAM. No phone needed; same extraction code, same anti-hallucination validation, same form output. `pip install -r requirements.txt && ollama pull gemma4:e4b && python api.py` then open `http://localhost:8000`. Voice-to-form, text-to-form, and queue-and-sync flows all run here. This is sufficient to verify our engineering claims (function calling, normalization, 6-layer validation, schema correctness).
+**Path 1 — workstation, ~5 minutes (recommended for reviewers).** Runs the full pipeline (Whisper + Gemma 4 E4B via Ollama) on any CUDA workstation with ≥10 GB VRAM (the E4B Q4_K_M model is ~9 GB resident). No phone needed; same extraction code, same anti-hallucination validation, same form output. With Ollama running, the three commands are `pip install -r requirements-hf.txt && ollama pull gemma4:e4b-it-q4_K_M && python api.py` then open `http://localhost:8000`. Note the slim `requirements-hf.txt` — inference goes through Ollama + faster-whisper, so PyTorch / Unsloth / bitsandbytes from the full `requirements.txt` are training-only and not needed here. Voice-to-form, text-to-form, and queue-and-sync flows all run on this stack. This is sufficient to verify our engineering claims (function calling, normalization, 6-layer validation, schema correctness).
 
 **Path 2 — on-device on Android, ~20-25 minutes total (for verifying the Cactus track).** Requires accepting the Cactus-Compute model license. Steps:
 1. Accept terms at [huggingface.co/Cactus-Compute/gemma-4-E2B-it](https://huggingface.co/Cactus-Compute/gemma-4-E2B-it) (1 min, free HF account).
@@ -143,6 +143,7 @@ Health Center (workstation, RTX GPU)              Field (Android phone)
 - Zero false danger alarms on normal visits
 - Correct referral escalation on danger cases
 - Avg 18.7s per test (form + danger sign extraction)
+- The rubric is per-case: each test asserts a small list of `hallucination_traps` (fields that MUST be null for that input). It does not assert null-everywhere-not-mentioned across the full schema. See [FAILURES.md](FAILURES.md) for one known under-specified trap (`pregnancy.previous_complications` on ANC preeclampsia).
 
 **End-to-end audio pipeline:** 13/15 tests pass (87%) — test_pipeline_e2e.py
 - 15 synthetic Hindi audio samples through full pipeline
@@ -189,11 +190,11 @@ One React + Vite codebase, shipped as both a browser UI (served by FastAPI at `/
 ## Quick Start
 
 ```bash
-# Prerequisites: Python 3.11+, Node 18+, Ollama, CUDA GPU (16GB VRAM recommended)
+# Prerequisites: Python 3.10+, Node 18+, Ollama (daemon running — Windows: launch the tray app, Linux/macOS: `ollama serve` in another shell), CUDA GPU (~10 GB VRAM for E4B Q4_K_M)
 
 # ── Health-center deployment (workstation, unified UI + API) ──
-pip install -r requirements.txt
-ollama pull gemma4:e4b
+pip install -r requirements-hf.txt          # slim runtime deps; Ollama + faster-whisper, no PyTorch/Unsloth
+ollama pull gemma4:e4b-it-q4_K_M             # ~9 GB; exact tag app.py defaults to (override with OLLAMA_MODEL=...)
 cd frontend && npm install && npm run build && cd ..
 python api.py
 # Browser: http://localhost:8000  (React UI)
@@ -240,7 +241,9 @@ python scripts/test_pipeline_e2e.py      # Full E2E audio (13/15)
 python scripts/test_asr.py               # Hindi normalization (133/133)
 cd frontend && npm test                  # JS pipeline port (72/72)
 
-# Retrain + A/B eval (requires RTX GPU, cmake, llama.cpp binaries)
+# Retrain + A/B eval (requires the FULL requirements.txt: Unsloth + PyTorch + bitsandbytes,
+# plus an RTX GPU, cmake, and llama.cpp binaries on PATH for GGUF export)
+pip install -r requirements.txt                 # NOTE: training-only deps, Blackwell-pinned PyTorch nightly
 python scripts/train_unsloth.py                 # Full pipeline: prep, train, export, register, eval
 python scripts/train_unsloth.py --export-only   # Skip training, just export saved adapter
 python scripts/compare_field_coverage.py        # Field-level diff base vs sakhi
@@ -263,7 +266,7 @@ frontend/
     prompts.js                      # FORM + DANGER prompts (template-based for on-device E2B)
     pipeline.js                     # Orchestrator (engine.complete({messages, options}) contract)
     cactus.js                       # Capacitor facade for Cactus SDK
-    __tests__/                      # 62/62 assertions pass under node --test
+    __tests__/                      # 72/72 assertions pass under node --test
   public/sw.js                      # Service worker for PWA offline caching (browser install)
   public/manifest.json              # PWA manifest
   capacitor.config.json             # Capacitor config (appId com.sakhi.app, http scheme for LAN)

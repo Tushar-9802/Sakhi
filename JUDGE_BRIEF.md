@@ -16,7 +16,7 @@ Sakhi converts Hindi home-visit conversations (voice on a shared health-center w
 
 | Measurement | Value | Source |
 |---|---|---|
-| Text extraction pass rate (base Gemma 4 E4B) | **15 / 15** | `scripts/test_ollama_quality.py` |
+| Text extraction pass rate (base Gemma 4 E4B) | **15 / 15** | `scripts/test_ollama_quality.py` — per-case rubric; one under-specified trap documented in [FAILURES.md](FAILURES.md) |
 | End-to-end audio pipeline pass rate | **13 / 15** | `scripts/test_pipeline_e2e.py` (2 TTS→ASR artifacts, documented in FAILURES.md) |
 | Hindi number / medical-term normalization | **133 / 133** | `scripts/test_asr.py` |
 | On-device JS pipeline port (engine-agnostic) | **72 / 72** | `cd frontend && node --test src/lib/__tests__/` |

@@ -57,6 +57,50 @@ Documented in `RETRAIN_RESULTS.md`. We ship the base model in the live Ollama pa
 
 `scripts/test_asr.py` covers all 0–999 Hindi number words + common Whisper misspelling variants + compound medical values (BP, weight, Hb, decimal, fractional). No known failures.
 
-## JS pipeline port: 62 / 62 pass
+## JS pipeline port: 72 / 72 pass
 
-`frontend/src/lib/__tests__/*.test.js` under `node --test`. Covers `parseJsonLoose` repair cases, `extractForm` validation, `extractDangerSigns` JSON path including fenced-JSON tolerance and parse-failure graceful-degrade, `runPipeline` end-to-end with a mock engine, Hindi normalizer parity with the Python port, visit-type keyword heuristic. No known failures.
+`frontend/src/lib/__tests__/*.test.js` under `node --test`. Covers `parseJsonLoose` repair cases, `extractForm` validation, `extractDangerSigns` JSON path including fenced-JSON tolerance and parse-failure graceful-degrade, `runPipeline` end-to-end with a mock engine, Hindi normalizer parity with the Python port, visit-type keyword heuristic, and the demographics-header merge (`applyMetadata`) across ANC / PNC / child-health / delivery schemas. No known failures.
+
+---
+
+## ANC form: `pregnancy.previous_complications` slot misclassification on preeclampsia transcripts
+
+**Harness:** live ANC preeclampsia inputs — synthetic text example `EXAMPLE_TRANSCRIPTS[1]` in `app.py`, real-voice clip `demo_audio/anc_preeclampsia_full.ogg`.
+
+**Observed output:** the form's `pregnancy.previous_complications` field is populated with the current-visit symptoms — "सिरदर्द, आँखों के सामने धुंधला दिखना, चेहरे पर सूजन, पैरों में सूजन" — when the conversation describes preeclampsia presenting *today*, not in a prior pregnancy. The same symptoms also appear correctly in `symptoms_reported`, and the danger panel correctly flags `severe_hypertension` / `severe_headache_and_visual_changes` / `edema` with `refer_immediately` and verbatim Hindi evidence. No clinical signal is lost; the misclassification is a duplicate-in-wrong-slot.
+
+### Root cause
+
+`configs/schemas/anc_visit.json:29` defines `previous_complications` with bare `{"type": ["string", "null"]}` and no `description` attribute — unlike adjacent fields (`lmp_date`, `gravida`, `para`) which carry explicit descriptions. The model is inferring semantics from the field name alone, and in a conversation densely populated with current findings it slots them into this field. The same input through the JS pipeline on Cactus (E2B INT4) does not exhibit the bug — the on-device path uses a null-filled instance template prompt rather than a raw JSON Schema, which sidesteps the under-described-field ambiguity.
+
+### Disposition
+
+One-line schema fix (add `"description": "Complications in PRIOR pregnancies — not current-visit findings"`) is held back close to deadline. The regression surface is the full form schema across all four visit types and we don't have time to re-run the eval suite against a tightened schema with confidence. The safety-critical output (danger panel + referral decision) is unaffected, so the conservative choice is documented disclosure now, schema cleanup post-competition.
+
+---
+
+## Eval-rubric scope: per-case hallucination traps under-specify ANC
+
+**Harness:** `scripts/test_ollama_quality.py`
+
+The 15/15 pass rate is computed against per-case `hallucination_traps` lists — each test enumerates the specific fields that MUST be null for that input, and the suite only asserts those (`scripts/test_ollama_quality.py:470-473`). For the ANC preeclampsia case at line 93, the trap list is `["patient.name", "lab_results.blood_group"]` — `pregnancy.previous_complications` is not checked, which is why the misclassification above passed every run.
+
+### Disposition
+
+The rubric is honest about what it tests — `hallucination_traps` is the literal list of fields each test asserts null for, and the test source is reproducible. But "15/15 tests pass" rests on a narrow per-case rubric, not a whole-schema null-everywhere-not-mentioned check. A wider rubric (every schema field absent from the transcript MUST be null) would have caught the misclassification above before deploy. Post-competition the rubric will be widened; the current ratio is reported as-is.
+
+---
+
+## ANC long-clip BP drop on conversational pacing
+
+**Harness:** `demo_audio/anc_preeclampsia_full.ogg` (52 s self-recorded clip) on the live HF Space.
+
+Whisper-Large CT2 returns the BP segment as "हाई हो रखा है" — the "BP बहुत ज़्यादा है" framing remains but the actual numeric value `155/100` is dropped. The 20-second short clip (`demo_audio/anc_preeclampsia_short.ogg`), where the same speaker pauses deliberately around `बटा`, transcribes `155/100` reliably.
+
+### Root cause
+
+Conversational pacing on the long clip. BP `एक सौ साठ बटा एक सौ दस` is recoverable from Whisper-Large with a ~0.5 s gap around `बटा`, and lossy without. Same speaker, same model, same hardware — the variable is delivery prosody, not Whisper.
+
+### Disposition
+
+Mitigation post-competition: custom Hindi-medical Whisper fine-tune. In-scope mitigation: the short clip is the manifest default so a reviewer's first impression preserves the full BP path. The 52 s clip remains in the dropdown as the longer-conversation evidence; the danger panel still extracts severe-hypertension from the verbatim `"बहुत ज़्यादा है"` framing even when the number is dropped.
